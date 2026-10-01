@@ -93,7 +93,11 @@ export class Renderer {
   private shimmer(scrollX: number, time: number): void {
     const fb = this.fb;
     const shimmerSeed = hashString(this.seed + ":shimmer");
-    const drift = Math.floor(time / 33);
+    // Oscillate rather than scroll monotonically — a still lake's glints
+    // swing back and forth with the ripples, they don't drift off to one
+    // side forever like a river current. A slow swing plus a faster, smaller
+    // wobble layered on top gives it some life rather than a flat metronome.
+    const drift = Math.round(Math.sin(time / 1400) * 16 + Math.sin(time / 340) * 5);
     for (let x = 0; x < fb.w; x++) {
       const wx = scrollX + x;
       if (!isWaterAt(wx, this.seed)) continue;
