@@ -52,12 +52,16 @@ export class SkyDynamics {
     const rng = mulberry32(hashString(seed + ":sky"));
     const cloudRng = mulberry32(hashString(seed + ":clouds"));
 
-    // clouds: a hazy, slow, grayish-blue far layer and a brighter, faster
-    // near layer, each cloud its own noise-shaped blob cluster (not one
-    // texture rescaled) so no two look alike.
+    // clouds: confined to a strip right at the top of the sky, safely above
+    // where the farthest hill silhouette can reach (farHillTop in
+    // worldgen.ts bottoms out at logicalY 40 — this overlay composites on
+    // top of the whole pixel-art canvas, so "behind the mountains" has to
+    // mean "never low enough to overlap them"). A hazy, slow, grayish-blue
+    // far layer and a slightly bigger, faster, whiter near layer, each
+    // cloud its own noise-shaped blob cluster so no two look alike.
     const layers: CloudLayer[] = [
-      { count: 7, scaleRange: [30, 52], topRange: [10, 70], speedRange: [0.6, 1.8], opacityRange: [0.35, 0.55], tint: 0xc3cfe0, z: -5 },
-      { count: 5, scaleRange: [58, 96], topRange: [70, 150], speedRange: [2, 5], opacityRange: [0.7, 0.92], tint: 0xfdfdfa, z: -3 },
+      { count: 6, scaleRange: [18, 30], topRange: [2, 10], speedRange: [0.4, 1.1], opacityRange: [0.3, 0.45], tint: 0xb9c6dc, z: -5 },
+      { count: 6, scaleRange: [26, 40], topRange: [9, 20], speedRange: [1, 2.2], opacityRange: [0.55, 0.78], tint: 0xf5f6f2, z: -4 },
     ];
     for (const layer of layers) {
       for (let i = 0; i < layer.count; i++) {
