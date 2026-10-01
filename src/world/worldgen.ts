@@ -184,7 +184,11 @@ export function generateChunk(seed: string, k: number): Pixmap {
         const floor = n > 0.85 ? C.grass : C.grassDark;
         c = ditherPick(floor, c, Math.min(forest, 0.9), wx >> 2, y >> 2);
       }
-      if (urban > 0) c = ditherPick(C.roadLight, c, urban, wx >> 2, y >> 2);
+      // fine-grained (not coarsened) and skipped once forest is established,
+      // so a trace of residual urban weight near a forest chunk can't paint
+      // visible gray blocks inside the woods (forest already excludes urban
+      // via regionWeights, but not all the way to exactly 0).
+      if (urban > 0 && forest < 0.3) c = ditherPick(C.roadLight, c, urban, wx, y);
       if (urban > 0.8) {
         const pn = noise2i(roadSeed, wx >> 2, y >> 2);
         if (pn < 0.04) c = C.roadDark;

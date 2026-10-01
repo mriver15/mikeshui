@@ -6,62 +6,64 @@ export const TREE_W = 64;
 export const TREE_H = 64;
 
 /**
- * Rounded Gen-3 style tree with directional canopy shading, a crisp dark
- * outline, and a short trunk. `variant` changes the silhouette for variety.
+ * One overlapping foliage "puff": dark ring, base fill, an upper-left light
+ * crescent, and a tiny bright fleck. Authentic Gen-3 trees/bushes are built
+ * from several of these nested circles overlapping into a cauliflower-like
+ * dome, not a single smooth ellipse with angular shading bands — studied
+ * from the public pokeemerald tileset rip (spriters-resource.com) to get
+ * the silhouette and shading technique right; colors are this project's own
+ * (pokeruby-disassembly-derived) palette, already a near-exact match.
+ */
+function puff(p: Pixmap, cx: number, cy: number, r: number): void {
+  p.fillCircle(cx, cy, r, C.black);
+  p.fillCircle(cx, cy, r - 1.2, C.treeDark);
+  p.fillCircle(cx - 0.5, cy - 0.5, r - 2.6, C.tree);
+  p.fillCircle(cx - r * 0.32, cy - r * 0.38, r * 0.42, C.treeLight);
+  p.fillCircle(cx - r * 0.4, cy - r * 0.46, r * 0.16, C.treeBright);
+}
+
+const TREE_LAYOUTS: number[][][] = [
+  // balanced dome
+  [
+    [32, 15, 11],
+    [17, 22, 12], [32, 18, 13], [47, 22, 12],
+    [14, 32, 13], [32, 30, 14], [50, 32, 13],
+  ],
+  // wide / flat
+  [
+    [32, 16, 10],
+    [15, 23, 12], [32, 19, 12], [49, 23, 12],
+    [10, 33, 13], [24, 32, 14], [40, 32, 14], [54, 33, 13],
+  ],
+  // tall / narrow
+  [
+    [32, 11, 10],
+    [19, 19, 11], [32, 15, 12], [45, 19, 11],
+    [17, 29, 12], [32, 27, 13], [47, 29, 12],
+  ],
+];
+
+/**
+ * Gen-3 style tree: a cluster of overlapping foliage puffs over a short
+ * trunk. `variant` picks a different lobe layout for silhouette variety.
  */
 export function treePixmap(variant = 0): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
-  const cx = 32;
-  const cy = variant === 2 ? 25 : 26;
-  const rx = variant === 1 ? 28 : variant === 2 ? 24 : 26;
-  const ry = variant === 1 ? 22 : variant === 2 ? 26 : 24;
-  for (let y = 0; y < TREE_H; y++) {
-    for (let x = 0; x < TREE_W; x++) {
-      const dx = (x + 0.5 - cx) / rx;
-      const dy = (y + 0.5 - cy) / ry;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > 1) continue;
-      const d = Math.sqrt(d2);
-      const l = (-dx - dy) / Math.SQRT2;
-      let c;
-      if (d > 0.94) c = C.black;
-      else if (d > 0.87) c = C.treeDark;
-      else if (l > 0.5) c = C.treeBright;
-      else if (l > 0.1) c = C.treeLight;
-      else if (l > -0.45) c = C.tree;
-      else c = C.treeDark;
-      p.set(x, y, c);
-    }
-  }
+  const layout = TREE_LAYOUTS[variant % TREE_LAYOUTS.length];
+  for (const [cx, cy, r] of layout) puff(p, cx, cy, r);
   p.fillRect(28, 44, 8, 18, C.black);
   p.fillRect(30, 44, 4, 16, C.trunk);
   p.set(30, 44, C.trunkDark);
   return p;
 }
 
-/** A small tree bearing red berries. */
+/** A small tree bearing red berries, built from the same puff clusters as treePixmap. */
 export function berryTreePixmap(): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
-  const cx = 32;
-  const cy = 28;
-  const r = 20;
-  for (let y = 0; y < TREE_H; y++) {
-    for (let x = 0; x < TREE_W; x++) {
-      const dx = x + 0.5 - cx;
-      const dy = y + 0.5 - cy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 > r * r) continue;
-      const d = Math.sqrt(d2);
-      const l = (-dx - dy) / Math.SQRT2;
-      let c;
-      if (d > r - 0.8) c = C.black;
-      else if (d > r - 2.4) c = C.treeDark;
-      else if (l > 0.35) c = C.treeLight;
-      else if (l > -0.3) c = C.tree;
-      else c = C.treeDark;
-      p.set(x, y, c);
-    }
-  }
+  puff(p, 22, 25, 11);
+  puff(p, 34, 20, 12);
+  puff(p, 44, 26, 10);
+  puff(p, 28, 33, 12);
   const spots: Array<[number, number]> = [
     [20, 20], [32, 16], [44, 21], [24, 28], [40, 28], [30, 34], [18, 26], [46, 26],
   ];
@@ -75,13 +77,12 @@ export function berryTreePixmap(): Pixmap {
   return p;
 }
 
-/** A low rounded berry bush. */
+/** A low rounded berry bush: three small puffs plus scattered berry dots. */
 export function berryBushPixmap(rng: RNG): Pixmap {
   const p = new Pixmap(32, 32);
-  p.fillCircle(16, 20, 11, C.black);
-  p.fillCircle(16, 20, 10, C.treeDark);
-  p.fillCircle(16, 19, 9, C.tree);
-  p.fillCircle(13, 16, 5, C.treeLight);
+  puff(p, 12, 21, 8);
+  puff(p, 20, 19, 9);
+  puff(p, 16, 25, 8);
   for (let i = 0; i < 5; i++) {
     const bx = 9 + Math.floor(rng() * 14);
     const by = 12 + Math.floor(rng() * 12);
@@ -173,22 +174,50 @@ export const BUILDING_H = 72;
  */
 export function buildingPixmap(type = 0): Pixmap {
   const styles = [
-    { roof: C.roadDark, roofDark: C.houseRoofDark, wall: C.houseWall, wallShade: C.houseWallShade, sign: null as number | null },
-    { roof: C.houseRoof, roofDark: C.houseRoofDark, wall: C.houseWall, wallShade: C.houseWallShade, sign: C.houseRoof },
-    { roof: C.water, roofDark: C.waterDeep, wall: C.houseWall, wallShade: C.houseWallShade, sign: C.water },
+    { roof: C.houseRoof, roofDark: C.houseRoofDark, roofLight: C.houseRoofLight, wall: C.houseWall, wallShade: C.houseWallShade, sign: null as number | null, dome: false },
+    { roof: C.houseRoof, roofDark: C.houseRoofDark, roofLight: C.houseRoofLight, wall: C.houseWall, wallShade: C.houseWallShade, sign: C.houseRoof as number | null, dome: true },
+    { roof: C.water, roofDark: C.waterDeep, roofLight: C.waterLight, wall: C.houseWall, wallShade: C.houseWallShade, sign: C.water as number | null, dome: true },
   ];
   const s = styles[type % styles.length];
   const p = new Pixmap(BUILDING_W, BUILDING_H);
   const cx = 48;
-  const roofApexY = 3;
   const roofBaseY = 30;
-  const roofHalf = 44;
 
-  // roof (outline + fill + left shade)
-  p.fillTriangle(cx, roofApexY - 1, cx - roofHalf - 2, roofBaseY + 2, cx + roofHalf + 2, roofBaseY + 2, s.roofDark);
-  p.fillTriangle(cx, roofApexY, cx - roofHalf, roofBaseY, cx + roofHalf, roofBaseY, s.roof);
-  p.fillTriangle(cx, roofApexY, cx - roofHalf, roofBaseY, cx - roofHalf * 0.2, roofBaseY, s.roofDark);
-  p.fillRect(cx - 1, roofApexY, 2, roofBaseY - roofApexY, s.roofDark);
+  if (s.dome) {
+    // Poke Center / Mart: a rounded dome roof (an outlined ellipse, clipped
+    // to its top arc by the opaque wall drawn below) with a pokeball
+    // emblem — Gen-3 service buildings use an arched roof, not a gable.
+    const domeRx = 46;
+    const domeRy = 27;
+    p.fillEllipse(cx, roofBaseY, domeRx + 2, domeRy + 2, s.roofDark);
+    p.fillEllipse(cx, roofBaseY, domeRx, domeRy, s.roof);
+    p.fillEllipse(cx, roofBaseY - 5, domeRx * 0.6, domeRy * 0.55, s.roofLight);
+    const ex = cx;
+    const ey = roofBaseY - 10;
+    p.fillCircle(ex, ey, 9, C.black);
+    p.fillCircle(ex, ey, 8, C.houseTrim);
+    p.fillRect(ex - 8, ey - 1, 16, 2, C.black);
+    p.fillCircle(ex, ey, 3, C.black);
+    p.fillCircle(ex, ey, 2, C.houseTrim);
+  } else {
+    // house: a triangular gable with a diamond-checker shingle texture
+    // (two alternating roof shades in a brick-offset grid), per-row offset
+    // so it reads as diamonds rather than a plain grid.
+    const roofApexY = 3;
+    const roofHalf = 44;
+    p.fillTriangle(cx, roofApexY - 1, cx - roofHalf - 2, roofBaseY + 2, cx + roofHalf + 2, roofBaseY + 2, s.roofDark);
+    for (let y = roofApexY; y < roofBaseY; y++) {
+      const t = (y - roofApexY) / (roofBaseY - roofApexY);
+      const halfW = roofHalf * t;
+      const rowOffset = y % 4 < 2 ? 0 : 2;
+      for (let x = Math.ceil(cx - halfW); x <= Math.floor(cx + halfW); x++) {
+        const block = Math.floor((x + rowOffset) / 4);
+        p.set(x, y, block % 2 === 0 ? s.roof : s.roofLight);
+      }
+    }
+    p.fillTriangle(cx, roofApexY, cx - roofHalf, roofBaseY, cx - roofHalf * 0.2, roofBaseY, s.roofDark);
+    p.fillRect(cx - 1, roofApexY, 2, roofBaseY - roofApexY, s.roofDark);
+  }
   p.fillRect(6, roofBaseY - 1, 84, 2, s.roofDark);
 
   // body
