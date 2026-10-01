@@ -146,7 +146,13 @@ export function fencePixmap(rng: RNG): Pixmap {
   return p;
 }
 
-/** A young trainer. `variant` switches outfit colors for variety. */
+/**
+ * A young trainer. `variant` switches outfit colors for variety. Built with
+ * the same outlined/rounded technique as the rest of the sprite set (a
+ * darker shape behind a slightly smaller colored one — see `puff` above and
+ * the building dome) instead of flat unoutlined rectangles, so it doesn't
+ * read as a different, cruder art style standing next to the trees.
+ */
 export function trainerPixmap(variant = 0): Pixmap {
   const schemes = [
     { cap: C.houseRoof, capDark: C.houseRoofDark, shirt: C.houseWall, shirtShade: C.houseWallShade, pants: C.waterDeep },
@@ -155,33 +161,48 @@ export function trainerPixmap(variant = 0): Pixmap {
   ];
   const s = schemes[variant % schemes.length];
   const p = new Pixmap(32, 60);
-  // cap
-  p.fillRect(6, 0, 20, 8, s.capDark);
-  p.fillRect(7, 1, 18, 7, s.cap);
-  p.fillRect(5, 8, 22, 3, s.capDark);
-  p.fillRect(6, 9, 20, 2, s.cap);
-  // face
-  p.fillRect(8, 11, 16, 12, C.skin);
-  p.fillRect(7, 13, 2, 8, C.skinShade);
-  p.fillRect(23, 13, 2, 8, C.skinShade);
+
+  // head: rounded and outlined, not a flat rectangle
+  p.fillEllipse(16, 16, 10, 10, C.black);
+  p.fillEllipse(16, 16, 9, 9, C.skin);
+  p.fillRect(7, 13, 2, 7, C.skinShade);
+  p.fillRect(23, 13, 2, 7, C.skinShade);
   p.set(12, 16, C.black);
   p.set(19, 16, C.black);
+
+  // cap: a rounded dome with a brim, outlined, instead of a boxy rectangle
+  p.fillEllipse(16, 8, 11, 9, C.black);
+  p.fillEllipse(16, 8, 10, 8, s.capDark);
+  p.fillEllipse(16, 7, 9, 7, s.cap);
+  p.fillRect(4, 10, 24, 4, C.black);
+  p.fillRect(5, 10, 22, 3, s.capDark);
+
   // neck
   p.fillRect(13, 23, 6, 3, C.skinShade);
-  // torso
+
+  // torso, outlined, with rounded hands at the cuffs
+  p.fillRect(6, 25, 20, 17, C.black);
   p.fillRect(7, 26, 18, 15, s.shirt);
   p.fillRect(6, 26, 3, 14, s.shirtShade);
   p.fillRect(23, 26, 3, 14, s.shirtShade);
-  p.set(6, 39, C.skin);
-  p.set(25, 39, C.skin);
   p.fillRect(13, 26, 6, 2, s.cap);
-  // pants
+  p.fillCircle(6, 40, 2, C.black);
+  p.fillCircle(6, 40, 1, C.skin);
+  p.fillCircle(26, 40, 2, C.black);
+  p.fillCircle(26, 40, 1, C.skin);
+
+  // pants, outlined
+  p.fillRect(8, 40, 16, 16, C.black);
   p.fillRect(9, 41, 6, 14, s.pants);
   p.fillRect(17, 41, 6, 14, s.pants);
   p.fillRect(15, 41, 2, 14, C.black);
+
   // shoes
-  p.fillRect(8, 55, 8, 5, C.trunkDark);
-  p.fillRect(16, 55, 8, 5, C.trunkDark);
+  p.fillRect(7, 54, 9, 6, C.black);
+  p.fillRect(16, 54, 9, 6, C.black);
+  p.fillRect(8, 55, 7, 4, C.trunkDark);
+  p.fillRect(17, 55, 7, 4, C.trunkDark);
+
   return p;
 }
 
