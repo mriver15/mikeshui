@@ -1,89 +1,128 @@
-import { mulberry32, hashString, type RNG } from "../core/rng";
-import { Perlin } from "../core/perlin";
-import { generateChunk, CHUNK_W, VIEW_H, type ChunkPiece } from "./worldgen";
+import { Pixmap, blit } from "../core/pixmap";
+import { SKY, RGBA32, C } from "../core/palette";
+import { ditherPick } from "../core/dither";
+import { noise2i, hashString } from "../core/prng";
+import {
+  generateChunk,
+  generateForeground,
+  isWaterAt,
+  waterSurfaceY,
+  CHUNK_W,
+  VIEW_H,
+  HORIZON,
+} from "./worldgen";
 
-const MAX_CACHED_CHUNKS = 256;
+const MAX_CACHED_CHUNKS = 512;
+const PARALLAX = 1.5;
 
 /**
- * Hosts an SVG painting inside `container`, windowed and panned the way
- * shan-shui-inf's `chunkrender`/`viewupdate` do: only chunks within one
- * `CHUNK_W` of the viewport are included, concatenated into a single `<g>`
- * sorted by `y` (painter's algorithm — see worldgen.ts), and the whole `<svg>`
- * is composited with `mix-blend-mode: multiply` over a generated paper
- * texture so overlapping ink strokes darken where they pool.
- *
- * Unlike the original, which rebuilds that `<g>` on every scroll tick, this
- * only rebuilds when the set of visible chunks actually changes.
+ * Rasterizes the infinite world into an offscreen low-resolution framebuffer,
+ * then nearest-neighbour-scales it onto the visible canvas for the pixel look.
  */
 export class Renderer {
-  private chunks = new Map<number, ChunkPiece[]>();
-  private perlin: Perlin;
-  private svg: SVGSVGElement;
-  private group: SVGGElement;
-  private logicalW = CHUNK_W;
-  private lastWindowKey = "";
+  private chunks = new Map<number, Pixmap>();
+  private fgChunks = new Map<number, Pixmap>();
+  private fb = new Pixmap(1, VIEW_H);
+  private off: HTMLCanvasElement;
+  private offctx: CanvasRenderingContext2D;
+  private octx: CanvasRenderingContext2D;
 
   constructor(
     private seed: string,
-    private container: HTMLElement,
+    private canvas: HTMLCanvasElement,
   ) {
-    this.perlin = new Perlin(seed);
-    const ns = "http://www.w3.org/2000/svg";
-    this.svg = document.createElementNS(ns, "svg") as SVGSVGElement;
-    this.svg.style.mixBlendMode = "multiply";
-    this.svg.style.width = "100%";
-    this.svg.style.height = "100%";
-    this.svg.style.display = "block";
-    this.group = document.createElementNS(ns, "g") as SVGGElement;
-    this.svg.appendChild(this.group);
-    container.appendChild(this.svg);
-    container.style.backgroundImage = `url(${paperTexture(seed)})`;
-    container.style.backgroundRepeat = "repeat";
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2D canvas context unavailable");
+    this.octx = ctx;
+    this.off = document.createElement("canvas");
+    this.off.width = 1;
+    this.off.height = VIEW_H;
+    const offctx = this.off.getContext("2d");
+    if (!offctx) throw new Error("2D canvas context unavailable");
+    this.offctx = offctx;
   }
 
   setSeed(seed: string): void {
     this.seed = seed;
-    this.perlin = new Perlin(seed);
     this.chunks.clear();
-    this.lastWindowKey = "";
-    this.container.style.backgroundImage = `url(${paperTexture(seed)})`;
+    this.fgChunks.clear();
   }
 
   resize(logicalWidth: number): void {
-    this.logicalW = logicalWidth;
-    this.lastWindowKey = "";
+    this.fb = new Pixmap(logicalWidth, VIEW_H);
+    this.off.width = logicalWidth;
+    this.off.height = VIEW_H;
   }
 
-  draw(scrollX: number): void {
-    const first = Math.floor(scrollX / CHUNK_W) - 1;
-    const last = Math.floor((scrollX + this.logicalW - 1) / CHUNK_W) + 1;
-    const windowKey = `${first}:${last}`;
+  draw(scrollX: number, time: number): void {
+    const fb = this.fb;
 
-    this.svg.setAttribute("viewBox", `${scrollX} 0 ${this.logicalW} ${VIEW_H}`);
+    // sky gradient (dithered for a smooth, band-free blend)
+    for (let y = 0; y < HORIZON; y++) {
+      const t = (y / HORIZON) * (SKY.length - 1);
+      const i = Math.floor(t);
+      const frac = t - i;
+      const a = SKY[i];
+      const b = SKY[Math.min(i + 1, SKY.length - 1)];
+      for (let x = 0; x < fb.w; x++) {
+        fb.data[y * fb.w + x] = ditherPick(a, b, frac, x, y);
+      }
+    }
 
-    if (windowKey === this.lastWindowKey) return;
-    this.lastWindowKey = windowKey;
+    // chunks
+    const first = Math.floor(scrollX / CHUNK_W);
+    const last = Math.floor((scrollX + fb.w - 1) / CHUNK_W);
+    for (let k = first; k <= last; k++) {
+      blit(fb, this.getChunk(k), k * CHUNK_W - scrollX, 0);
+    }
 
-    const pieces: ChunkPiece[] = [];
-    for (let k = first; k <= last; k++) pieces.push(...this.getChunk(k));
-    pieces.sort((a, b) => a.y - b.y);
+    // foreground (parallax: scrolls faster, drawn last)
+    const fgScroll = Math.round(scrollX * PARALLAX);
+    const fgFirst = Math.floor(fgScroll / CHUNK_W);
+    const fgLast = Math.floor((fgScroll + fb.w - 1) / CHUNK_W);
+    for (let k = fgFirst; k <= fgLast; k++) {
+      blit(fb, this.getFgChunk(k), k * CHUNK_W - fgScroll, 0);
+    }
 
-    this.group.innerHTML = pieces.map((p) => p.svg).join("");
+    // animated water shimmer
+    this.shimmer(scrollX, time);
+
+    this.present();
   }
 
-  /** Current viewport as a standalone SVG document string, for the download button. */
-  exportSvg(scrollX: number): string {
-    return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${this.logicalW}" height="${VIEW_H}" ` +
-      `viewBox="${scrollX} 0 ${this.logicalW} ${VIEW_H}" style="background:#f4ede0">` +
-      `<g style="mix-blend-mode:multiply">${this.group.innerHTML}</g></svg>`
-    );
+  private shimmer(scrollX: number, time: number): void {
+    const fb = this.fb;
+    const shimmerSeed = hashString(this.seed + ":shimmer");
+    const drift = Math.floor(time / 33);
+    for (let x = 0; x < fb.w; x++) {
+      const wx = scrollX + x;
+      if (!isWaterAt(wx, this.seed)) continue;
+      const surf = waterSurfaceY(wx);
+      for (let y = surf + 4; y < VIEW_H; y++) {
+        const n = noise2i(shimmerSeed, wx + drift, y);
+        if (n < 0.05) fb.data[y * fb.w + x] = C.waterBright;
+        else if (n > 0.93) fb.data[y * fb.w + x] = C.waterLight;
+      }
+    }
   }
 
-  private getChunk(k: number): ChunkPiece[] {
+  private getFgChunk(k: number): Pixmap {
+    let c = this.fgChunks.get(k);
+    if (!c) {
+      c = generateForeground(this.seed, k);
+      this.fgChunks.set(k, c);
+      if (this.fgChunks.size > MAX_CACHED_CHUNKS) {
+        const oldest = this.fgChunks.keys().next().value;
+        if (oldest !== undefined) this.fgChunks.delete(oldest);
+      }
+    }
+    return c;
+  }
+
+  private getChunk(k: number): Pixmap {
     let c = this.chunks.get(k);
     if (!c) {
-      c = generateChunk(this.seed, k, this.perlin);
+      c = generateChunk(this.seed, k);
       this.chunks.set(k, c);
       if (this.chunks.size > MAX_CACHED_CHUNKS) {
         const oldest = this.chunks.keys().next().value;
@@ -92,43 +131,16 @@ export class Renderer {
     }
     return c;
   }
-}
 
-/** Seamlessly-tileable warm paper texture, ported from shan-shui-inf's background canvas. */
-function paperTexture(seed: string): string {
-  const reso = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = reso;
-  canvas.height = reso;
-  const ctx = canvas.getContext("2d")!;
-  const img = ctx.createImageData(reso, reso);
-  const perlin = new Perlin(seed + ":paper");
-  const rng: RNG = mulberry32(hashString(seed + ":paper-grain"));
-
-  const half = reso / 2;
-  for (let i = 0; i <= half; i++) {
-    for (let j = 0; j <= half; j++) {
-      let c = 245 + perlin.noise(i * 0.1, j * 0.1) * 10;
-      c -= rng() * 20;
-      const r = c;
-      const g = c * 0.95;
-      const b = c * 0.85;
-      for (const [x, y] of [
-        [i, j],
-        [reso - i, j],
-        [i, reso - j],
-        [reso - i, reso - j],
-      ] as const) {
-        const xi = Math.min(reso - 1, x);
-        const yi = Math.min(reso - 1, y);
-        const idx = (yi * reso + xi) * 4;
-        img.data[idx] = r;
-        img.data[idx + 1] = g;
-        img.data[idx + 2] = b;
-        img.data[idx + 3] = 255;
-      }
+  private present(): void {
+    const img = this.offctx.createImageData(this.off.width, this.off.height);
+    const data32 = new Uint32Array(img.data.buffer);
+    const src = this.fb.data;
+    for (let i = 0; i < src.length; i++) {
+      data32[i] = RGBA32[src[i]];
     }
+    this.offctx.putImageData(img, 0, 0);
+    this.octx.imageSmoothingEnabled = false;
+    this.octx.drawImage(this.off, 0, 0, this.canvas.width, this.canvas.height);
   }
-  ctx.putImageData(img, 0, 0);
-  return canvas.toDataURL("image/png");
 }
