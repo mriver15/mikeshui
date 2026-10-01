@@ -5,8 +5,17 @@ import type { RNG } from "../core/prng";
 /** World tile size in pixels (2× resolution). */
 export const TILE = 32;
 
-/** A clump of tall grass blades (transparent background, drawn over the field). */
-export function tallGrassTile(rng: RNG): Pixmap {
+/**
+ * A clump of tall grass blades (transparent background, drawn over the
+ * field). `sway` bends each blade sideways, growing toward the tip — at
+ * sway=0 (the default) this is a no-op, so the baked rest-pose a chunk
+ * stores is pixel-identical to calling this with no sway at all. The same
+ * seeded `rng` always produces the same blade layout (position/height/lean
+ * are unaffected by `sway`), so re-calling this each frame with a fresh
+ * `keyRng` of the same key and a different `sway` animates the *same*
+ * tuft instead of reshuffling it.
+ */
+export function tallGrassTile(rng: RNG, sway = 0): Pixmap {
   const p = new Pixmap(TILE, TILE);
   for (let i = 0; i < 5; i++) {
     const bx = 2 + i * 6 + Math.floor(rng() * 3);
@@ -14,7 +23,8 @@ export function tallGrassTile(rng: RNG): Pixmap {
     const h = 6 + Math.floor(rng() * 5);
     const lean = rng() < 0.5 ? -1 : 1;
     for (let yy = 0; yy < h; yy++) {
-      const x = bx + Math.floor((yy * lean) / 3);
+      const bend = Math.round((yy / h) * sway);
+      const x = bx + Math.floor((yy * lean) / 3) + bend;
       const y = baseY - yy;
       const c = yy < 2 ? C.tallGrassLight : C.tallGrass;
       p.set(x, y, c);

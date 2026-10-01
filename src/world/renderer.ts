@@ -1,7 +1,8 @@
 import { Pixmap, blit } from "../core/pixmap";
 import { SKY, RGBA32, C } from "../core/palette";
 import { ditherPick } from "../core/dither";
-import { noise2i, hashString } from "../core/prng";
+import { noise2i, hashString, keyRng } from "../core/prng";
+import { tallGrassTile, TILE } from "../sprites/tiles";
 import {
   generateChunk,
   generateForeground,
@@ -10,6 +11,7 @@ import {
   CHUNK_W,
   VIEW_H,
   HORIZON,
+  type ChunkResult,
 } from "./worldgen";
 
 const MAX_CACHED_CHUNKS = 512;
@@ -20,7 +22,7 @@ const PARALLAX = 1.5;
  * then nearest-neighbour-scales it onto the visible canvas for the pixel look.
  */
 export class Renderer {
-  private chunks = new Map<number, Pixmap>();
+  private chunks = new Map<number, ChunkResult>();
   private fgChunks = new Map<number, Pixmap>();
   private fb = new Pixmap(1, VIEW_H);
   private off: HTMLCanvasElement;
@@ -73,7 +75,7 @@ export class Renderer {
     const first = Math.floor(scrollX / CHUNK_W);
     const last = Math.floor((scrollX + fb.w - 1) / CHUNK_W);
     for (let k = first; k <= last; k++) {
-      blit(fb, this.getChunk(k), k * CHUNK_W - scrollX, 0);
+      blit(fb, this.getChunk(k).pixmap, k * CHUNK_W - scrollX, 0);
     }
 
     // foreground (parallax: scrolls faster, drawn last)
@@ -84,8 +86,9 @@ export class Renderer {
       blit(fb, this.getFgChunk(k), k * CHUNK_W - fgScroll, 0);
     }
 
-    // animated water shimmer
+    // animated water shimmer and tall-grass sway
     this.shimmer(scrollX, time);
+    this.sway(first, last, scrollX, time);
 
     this.present();
   }
@@ -110,6 +113,25 @@ export class Renderer {
     }
   }
 
+  /**
+   * Redraws each visible tall-grass tuft with a small time-varying lean,
+   * overdrawing the rest-pose already baked into the chunk — the same
+   * "static raster + small per-frame overdraw" pattern as `shimmer`,
+   * applied to real grass sprites instead of a disconnected overlay mesh.
+   */
+  private sway(first: number, last: number, scrollX: number, time: number): void {
+    const fb = this.fb;
+    for (let k = first; k <= last; k++) {
+      for (const spot of this.getChunk(k).tallGrass) {
+        const screenX = spot.x - scrollX;
+        if (screenX < -TILE || screenX >= fb.w) continue;
+        const lean = Math.sin(time / 900 + spot.x * 0.05) * 1.6;
+        const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
+        blit(fb, tallGrassTile(rng, lean), screenX, spot.y);
+      }
+    }
+  }
+
   private getFgChunk(k: number): Pixmap {
     let c = this.fgChunks.get(k);
     if (!c) {
@@ -123,7 +145,7 @@ export class Renderer {
     return c;
   }
 
-  private getChunk(k: number): Pixmap {
+  private getChunk(k: number): ChunkResult {
     let c = this.chunks.get(k);
     if (!c) {
       c = generateChunk(this.seed, k);

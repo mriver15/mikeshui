@@ -17,9 +17,9 @@ describe("generateChunk", () => {
   });
 
   it("always returns a pixmap of the declared chunk dimensions", () => {
-    const pm = generateChunk("1790824785082", 3);
-    expect(pm.w).toBe(CHUNK_W);
-    expect(pm.h).toBe(VIEW_H);
+    const { pixmap } = generateChunk("1790824785082", 3);
+    expect(pixmap.w).toBe(CHUNK_W);
+    expect(pixmap.h).toBe(VIEW_H);
   });
 
   it("is deterministic: same seed+k produces byte-identical output", () => {
@@ -27,7 +27,7 @@ describe("generateChunk", () => {
       for (const k of [0, 1, 5]) {
         const a = generateChunk(seed, k);
         const b = generateChunk(seed, k);
-        expect(a.data).toEqual(b.data);
+        expect(a.pixmap.data).toEqual(b.pixmap.data);
       }
     }
   });
@@ -35,15 +35,29 @@ describe("generateChunk", () => {
   it("different seeds produce different worlds (not accidentally constant)", () => {
     const a = generateChunk("seed-a", 0);
     const b = generateChunk("seed-b", 0);
-    expect(a.data).not.toEqual(b.data);
+    expect(a.pixmap.data).not.toEqual(b.pixmap.data);
   });
 
   it("never produces a fully blank chunk (ground/hills always draw something)", () => {
     for (const seed of SEEDS) {
       for (const k of [0, 1, 2]) {
-        const pm = generateChunk(seed, k);
-        const nonZero = pm.data.some((v) => v !== 0);
+        const { pixmap } = generateChunk(seed, k);
+        const nonZero = pixmap.data.some((v: number) => v !== 0);
         expect(nonZero, `seed=${JSON.stringify(seed)} k=${k} was entirely empty`).toBe(true);
+      }
+    }
+  });
+
+  it("tall-grass spots fall within the chunk's own x-span and below the horizon", () => {
+    for (const seed of ["1790824785082", "42", "hello world"]) {
+      for (const k of [-3, 0, 1, 7]) {
+        const { tallGrass } = generateChunk(seed, k);
+        for (const spot of tallGrass) {
+          expect(spot.x).toBeGreaterThanOrEqual(k * CHUNK_W);
+          expect(spot.x).toBeLessThan((k + 1) * CHUNK_W);
+          expect(spot.y).toBeGreaterThanOrEqual(0);
+          expect(spot.y).toBeLessThan(VIEW_H);
+        }
       }
     }
   });
@@ -69,7 +83,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
     const hash = createHash("sha256");
     for (const seed of GOLDEN_SEEDS) {
       for (const k of GOLDEN_CHUNKS) {
-        hash.update(generateChunk(seed, k).data);
+        hash.update(generateChunk(seed, k).pixmap.data);
       }
     }
     expect(hash.digest("hex")).toBe(GOLDEN_HASH);

@@ -207,6 +207,25 @@ interface Rect {
   h: number;
 }
 
+/**
+ * A placed tall-grass tile, in world-space, with the exact keyRng args
+ * used to generate it — enough for the renderer to regenerate the same
+ * blade layout each frame with a different sway, without having to
+ * replay chunk generation.
+ */
+export interface TallGrassSpot {
+  x: number;
+  y: number;
+  k: number;
+  i: number;
+  t: number;
+}
+
+export interface ChunkResult {
+  pixmap: Pixmap;
+  tallGrass: TallGrassSpot[];
+}
+
 function overlaps(a: Rect, b: Rect): boolean {
   return (
     a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
@@ -238,7 +257,7 @@ function groundFree(
 }
 
 /** Generate a full-height chunk (world x in [k*CHUNK_W, (k+1)*CHUNK_W)). */
-export function generateChunk(seed: string, k: number): Pixmap {
+export function generateChunk(seed: string, k: number): ChunkResult {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
   const x0 = k * CHUNK_W;
   const region = regionAt(x0 + CHUNK_W / 2, seed);
@@ -388,6 +407,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
 
   // objects (region-dependent)
   const occupied: Rect[] = [];
+  const tallGrass: TallGrassSpot[] = [];
   let trainerRect: Rect | null = null;
   let trainerVariant = 0;
 
@@ -508,6 +528,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
         occupied.push(r);
         for (let t = 0; t < wide; t++) {
           blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), r.x + t * TILE, r.y);
+          tallGrass.push({ x: x0 + r.x + t * TILE, y: r.y, k, i, t });
         }
       }
     }
@@ -640,7 +661,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
     }
   }
 
-  return pm;
+  return { pixmap: pm, tallGrass };
 }
 
 /**

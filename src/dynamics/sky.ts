@@ -19,23 +19,21 @@ interface CloudLayer {
 
 /**
  * Three.js overlay: drifting clouds (two depth layers for a sense of
- * distance) and swaying foreground grass, composited over the pixel-art
- * world canvas. The camera uses the same logical height (VIEW_H) as the 2D
- * renderer, with +Y up (y = VIEW_H - logicalY).
+ * distance), composited over the pixel-art world canvas. (Swaying grass
+ * used to live here too — a disconnected mesh of plain planes with no
+ * relationship to the real tall-grass sprites or where they're actually
+ * placed. Removed in favor of animating the real sprites directly in the
+ * 2D renderer — see `Renderer.sway` in world/renderer.ts.) The camera uses
+ * the same logical height (VIEW_H) as the 2D renderer, with +Y up
+ * (y = VIEW_H - logicalY).
  */
 export class SkyDynamics {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.OrthographicCamera;
   private clouds: Array<{ sprite: THREE.Sprite; speed: number }> = [];
-  private grass: THREE.InstancedMesh;
-  private grassCount: number;
-  private grassX: Float32Array;
-  private grassPhase: Float32Array;
-  private grassLean: Float32Array;
   private logicalW: number;
   private lastTime = 0;
-  private dummy = new THREE.Object3D();
 
   constructor(private canvas: HTMLCanvasElement, seed: string) {
     this.renderer = new THREE.WebGLRenderer({
@@ -49,7 +47,6 @@ export class SkyDynamics {
     this.camera = new THREE.OrthographicCamera(0, this.logicalW, 0, VIEW_H, -100, 100);
     this.camera.position.z = 1;
 
-    const rng = mulberry32(hashString(seed + ":sky"));
     const cloudRng = mulberry32(hashString(seed + ":clouds"));
 
     // clouds: confined to a strip right at the top of the sky, safely above
@@ -83,22 +80,6 @@ export class SkyDynamics {
         this.clouds.push({ sprite, speed });
       }
     }
-
-    // swaying grass blades
-    this.grassCount = 150;
-    const bladeGeo = new THREE.PlaneGeometry(2, 16, 1, 1);
-    bladeGeo.translate(0, 8, 0); // origin at base
-    const bladeMat = new THREE.MeshBasicMaterial({ color: 0x398b31, side: THREE.DoubleSide });
-    this.grass = new THREE.InstancedMesh(bladeGeo, bladeMat, this.grassCount);
-    this.grassX = new Float32Array(this.grassCount);
-    this.grassPhase = new Float32Array(this.grassCount);
-    this.grassLean = new Float32Array(this.grassCount);
-    for (let i = 0; i < this.grassCount; i++) {
-      this.grassX[i] = rng() * this.logicalW;
-      this.grassPhase[i] = rng() * Math.PI * 2;
-      this.grassLean[i] = (rng() - 0.5) * 0.35;
-    }
-    this.scene.add(this.grass);
   }
 
   resize(logicalW: number): void {
@@ -121,19 +102,6 @@ export class SkyDynamics {
       sprite.position.x += speed * dt;
       if (sprite.position.x > this.logicalW + 80) sprite.position.x = -80;
     }
-
-    // swaying grass
-    const dummy = this.dummy;
-    for (let i = 0; i < this.grassCount; i++) {
-      const lean =
-        this.grassLean[i] +
-        Math.sin(t * 2.2 + this.grassPhase[i] + this.grassX[i] * 0.02) * 0.1;
-      dummy.position.set(this.grassX[i], 3, 0);
-      dummy.rotation.z = lean;
-      dummy.updateMatrix();
-      this.grass.setMatrixAt(i, dummy.matrix);
-    }
-    this.grass.instanceMatrix.needsUpdate = true;
 
     this.renderer.render(this.scene, this.camera);
   }
