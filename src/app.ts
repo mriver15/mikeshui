@@ -1,11 +1,8 @@
 import { Renderer } from "./world/renderer";
-import { SkyDynamics } from "./dynamics/sky";
-import { VIEW_H } from "./world/worldgen";
+import { VIEW_H, CHUNK_W } from "./world/worldgen";
 
 interface AppState {
   renderer: Renderer;
-  canvas: HTMLCanvasElement;
-  seedLabel: HTMLElement;
   scrollX: number;
   logicalW: number;
   seed: string;
@@ -18,117 +15,121 @@ export function boot(root: HTMLElement): void {
     setUrlSeed(seed);
   }
 
-  const canvas = document.createElement("canvas");
-  canvas.className = "view";
-  root.appendChild(canvas);
-
-  const overlay = document.createElement("canvas");
-  overlay.className = "overlay";
-  root.appendChild(overlay);
+  const view = document.createElement("div");
+  view.className = "view";
+  root.appendChild(view);
 
   const ui = document.createElement("div");
   ui.className = "ui";
   ui.innerHTML = `
     <div class="panel">
-      <div class="title">EMERALD FIELD</div>
-      <div class="subtitle">procedural Hoenn-inspired landscape</div>
+      <div class="title">mikeshui</div>
+      <div class="subtitle">infinite ink-wash landscape</div>
       <div class="seed">seed&nbsp;<span id="seed">${seed}</span></div>
       <div class="controls">
         <button id="left">◀</button>
         <button id="right">▶</button>
         <button id="new">✦ new</button>
-        <button id="dl">↓ png</button>
+        <button id="dlsvg">↓ svg</button>
+        <button id="dlpng">↓ png</button>
       </div>
       <div class="hint">← → or drag to wander</div>
     </div>`;
   root.appendChild(ui);
 
-  const renderer = new Renderer(seed, canvas);
-  const dynamics = new SkyDynamics(overlay, seed);
-  const state: AppState = {
-    renderer,
-    canvas,
-    seedLabel: ui.querySelector("#seed") as HTMLElement,
-    scrollX: 0,
-    logicalW: 0,
-    seed,
-  };
+  const renderer = new Renderer(seed, view);
+  const state: AppState = { renderer, scrollX: 0, logicalW: CHUNK_W, seed };
 
-  // Continuous render loop (drives the animated water shimmer).
-  const loop = (time: number) => {
-    renderer.draw(state.scrollX, time);
-    dynamics.render(time);
-    requestAnimationFrame(loop);
-  };
-  requestAnimationFrame(loop);
+  const render = () => renderer.draw(state.scrollX);
 
   const resize = () => {
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.floor(window.innerWidth * dpr));
-    const h = Math.max(1, Math.floor(window.innerHeight * dpr));
-    canvas.width = w;
-    canvas.height = h;
-    overlay.width = w;
-    overlay.height = h;
-    state.logicalW = Math.max(VIEW_H, Math.round(VIEW_H * (w / h)));
+    const w = view.clientWidth || window.innerWidth;
+    const h = view.clientHeight || window.innerHeight;
+    state.logicalW = Math.max(200, Math.round(VIEW_H * (w / h)));
     renderer.resize(state.logicalW);
-    dynamics.resize(state.logicalW);
+    render();
   };
 
   const scrollBy = (dx: number) => {
     state.scrollX = Math.max(0, state.scrollX + dx);
+    render();
   };
 
   window.addEventListener("resize", resize);
 
-  ui.querySelector("#left")?.addEventListener("click", () => scrollBy(-64));
-  ui.querySelector("#right")?.addEventListener("click", () => scrollBy(64));
+  ui.querySelector("#left")?.addEventListener("click", () => scrollBy(-state.logicalW * 0.2));
+  ui.querySelector("#right")?.addEventListener("click", () => scrollBy(state.logicalW * 0.2));
   ui.querySelector("#new")?.addEventListener("click", () => {
     const next = String(Date.now());
     setUrlSeed(next);
     state.seed = next;
-    state.seedLabel.textContent = next;
+    (ui.querySelector("#seed") as HTMLElement).textContent = next;
     renderer.setSeed(next);
+    render();
   });
-  ui.querySelector("#dl")?.addEventListener("click", () => {
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `emerald-field-${state.seed}.png`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    });
+  ui.querySelector("#dlsvg")?.addEventListener("click", () => {
+    const svg = renderer.exportSvg(state.scrollX);
+    const blob = new Blob([svg], { type: "image/svg+xml" });
+    triggerDownload(URL.createObjectURL(blob), `mikeshui-${state.seed}.svg`);
+  });
+  ui.querySelector("#dlpng")?.addEventListener("click", () => {
+    const svg = renderer.exportSvg(state.scrollX);
+    const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const scale = 2;
+      canvas.width = state.logicalW * scale;
+      canvas.height = VIEW_H * scale;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#f4ede0";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        triggerDownload(URL.createObjectURL(blob), `mikeshui-${state.seed}.png`);
+      });
+    };
+    img.src = url;
   });
 
   window.addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft") {
-      scrollBy(-32);
+      scrollBy(-state.logicalW * 0.1);
       e.preventDefault();
     } else if (e.key === "ArrowRight") {
-      scrollBy(32);
+      scrollBy(state.logicalW * 0.1);
       e.preventDefault();
     }
   });
 
   let dragging = false;
   let lastX = 0;
-  canvas.addEventListener("pointerdown", (e) => {
+  view.addEventListener("pointerdown", (e) => {
     dragging = true;
     lastX = e.clientX;
-    canvas.setPointerCapture(e.pointerId);
+    view.setPointerCapture(e.pointerId);
   });
-  canvas.addEventListener("pointermove", (e) => {
+  view.addEventListener("pointermove", (e) => {
     if (!dragging) return;
     const dx = e.clientX - lastX;
     lastX = e.clientX;
-    const scale = canvas.clientWidth / state.logicalW;
+    const scale = view.clientWidth / state.logicalW;
     scrollBy(-dx / scale);
   });
-  canvas.addEventListener("pointerup", () => (dragging = false));
-  canvas.addEventListener("pointercancel", () => (dragging = false));
+  view.addEventListener("pointerup", () => (dragging = false));
+  view.addEventListener("pointercancel", () => (dragging = false));
 
   resize();
+}
+
+function triggerDownload(url: string, filename: string): void {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function setUrlSeed(seed: string): void {

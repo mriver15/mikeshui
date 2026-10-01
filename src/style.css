@@ -13,7 +13,7 @@ body,
 }
 
 body {
-  background: #0a120c;
+  background: #ece3d2;
   font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
 }
 
@@ -21,27 +21,21 @@ body {
   position: relative;
 }
 
-canvas.view {
+.view {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  display: block;
+  background-color: #f4ede0;
   cursor: grab;
-  image-rendering: pixelated;
 }
 
-canvas.view:active {
+.view:active {
   cursor: grabbing;
 }
 
-canvas.overlay {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  pointer-events: none;
+.view svg {
+  touch-action: none;
 }
 
 .ui {
@@ -54,12 +48,12 @@ canvas.overlay {
   position: absolute;
   top: 16px;
   left: 16px;
-  background: rgba(8, 18, 10, 0.82);
-  color: #d8f0d0;
+  background: rgba(30, 26, 20, 0.82);
+  color: #ece3d2;
   padding: 14px 18px;
-  border: 2px solid #3a7a4a;
-  border-radius: 6px;
-  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4);
+  border: 1px solid #5a4f3c;
+  border-radius: 2px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
   min-width: 230px;
   max-width: calc(100vw - 32px);
 }
@@ -67,19 +61,19 @@ canvas.overlay {
 .title {
   font-size: 18px;
   font-weight: 700;
-  letter-spacing: 2px;
-  color: #a8e8a0;
+  letter-spacing: 3px;
+  color: #ddd0b0;
 }
 
 .subtitle {
   font-size: 11px;
-  color: #7fae86;
+  color: #a69a80;
   margin-top: 2px;
 }
 
 .seed {
   font-size: 11px;
-  color: #a0c8a8;
+  color: #c0b49a;
   margin-top: 10px;
   word-break: break-all;
 }
@@ -87,6 +81,7 @@ canvas.overlay {
 .controls {
   margin-top: 10px;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   pointer-events: auto;
 }
@@ -95,20 +90,20 @@ button {
   pointer-events: auto;
   font-family: inherit;
   font-size: 12px;
-  color: #e8f8e0;
-  background: #2c4a30;
-  border: 2px solid #4a8a58;
-  border-radius: 4px;
+  color: #ece3d2;
+  background: #3a332a;
+  border: 1px solid #6a5d46;
+  border-radius: 2px;
   padding: 5px 9px;
   cursor: pointer;
 }
 
 button:hover {
-  background: #3a5f40;
+  background: #4a4134;
 }
 
 .hint {
   font-size: 10px;
-  color: #6f9a78;
+  color: #8a7f68;
   margin-top: 10px;
 }

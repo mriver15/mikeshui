@@ -1,440 +1,158 @@
-import { Pixmap, blit, blitScaled } from "../core/pixmap";
-import { C } from "../core/palette";
-import { keyRng, noise2i, hashString } from "../core/prng";
-import { ditherPick, smoothstep } from "../core/dither";
-import { fbm1D } from "../core/perlin";
-import { tallGrassTile, flowerTile, TILE } from "../sprites/tiles";
-import {
-  treePixmap,
-  berryTreePixmap,
-  berryBushPixmap,
-  fencePixmap,
-  trainerPixmap,
-  buildingPixmap,
-  streetlampPixmap,
-  benchPixmap,
-  flowerBedPixmap,
-  TREE_W,
-  TREE_H,
-  BUILDING_W,
-  BUILDING_H,
-} from "../sprites/objects";
+/**
+ * World layout, ported from shan-shui-inf's noise-field `mountplanner` +
+ * `chunkloader`. Two deliberate departures from the original, both needed
+ * for a bounded-memory infinite scroll (see the plan doc for the full
+ * rationale):
+ *
+ * 1. Every draw gets its own `keyRng(seed, ...)` stream instead of pulling
+ *    from one shared, sequentially-advanced `Math.random`. This makes each
+ *    placement decision a pure function of its own position, so a chunk can
+ *    be regenerated identically at any time without replaying everything
+ *    generated before it.
+ * 2. `mountplanner` is a pure function of an x-window (padded generously
+ *    beyond the window actually returned) rather than a stateful scan that
+ *    only ever grows forward/backward one chunk at a time. Peak *detection*
+ *    is already a pure function of the noise field in the original, so two
+ *    overlapping padded windows agree on candidates near their shared edge;
+ *    only the de-duplication/clumping pass (`chadd`) needs that padding to
+ *    match what a full-history scan would have decided.
+ *
+ * Deferred for now (see plan doc): boats and architecture (shan-shui-inf's
+ * `Arch` module) — `mountplanner` never emits a `"boat"` item here.
+ */
+import { keyRng, randChoice } from "../core/rng";
+import type { Perlin } from "../core/perlin";
+import { mountain, distMount, flatMount } from "../sprites/mountain";
+import { water } from "../sprites/water";
 
-export const VIEW_H = 320;
-export const CHUNK_TILES = 16;
-export const CHUNK_W = CHUNK_TILES * TILE;
-export const HORIZON = 128;
-export const LAKE_TOP = 276;
+export const VIEW_H = 800;
+export const CHUNK_W = 512;
 
-const TRAINER_W = 32;
-const TRAINER_H = 60;
+const XSTEP = 5;
+const MOUNT_WIDTH = 200; // mwid in the source
+const PLAN_PAD = 700; // > MOUNT_WIDTH, enough margin for chadd dedup to agree at window edges
 
-// --- regions ---
-const REGION_ROUTE = 0;
-const REGION_FOREST = 1;
-const REGION_CITY = 2;
-
-function regionAt(x: number, seed: string): number {
-  const v = fbm1D(x / 8000, seed + ":region", 3);
-  if (v > 0.72) return REGION_CITY;
-  if (v > 0.5) return REGION_FOREST;
-  return REGION_ROUTE;
+export interface ChunkPiece {
+  /** World x, used only to decide which chunks a piece belongs to when windowing. */
+  x: number;
+  /** Painter's-order sort key — smaller is drawn first (further back). */
+  y: number;
+  svg: string;
 }
 
-/** Continuous region weights for smooth ground/path blending. */
-function regionWeights(x: number, seed: string): { urban: number; forest: number } {
-  const v = fbm1D(x / 8000, seed + ":region", 3);
-  const urban = smoothstep(0.67, 0.77, v);
-  const forest = smoothstep(0.46, 0.56, v) * (1 - urban);
-  return { urban, forest };
-}
-
-// --- continuous terrain curves (functions of world x, seam-free) ---
-
-/** Distant hazy hills behind everything. */
-function farHillTop(x: number, seed: string): number {
-  return 40 + fbm1D(x / 90, seed + ":far", 2) * 30;
-}
-
-/** Mid-distance forested hills. */
-function midHillTop(x: number, seed: string): number {
-  return 70 + fbm1D(x / 50, seed + ":mid", 3) * 40;
-}
-
-function pathCenter(x: number, seed: string): number {
-  return 200 + fbm1D(x / 320, seed + ":path", 2) * 28;
-}
-
-function pathBand(x: number, seed: string, region: number): [number, number] {
-  const c = Math.round(pathCenter(x, seed));
-  const half = region === REGION_CITY ? 36 : 26;
-  return [c - half, c + half];
-}
-
-function inLake(x: number, seed: string): boolean {
-  return fbm1D(x / 520, seed + ":lake", 2) > 0.6;
-}
-
-/** Whether a horizontal span [x0, x0+w) crosses any lake water (non-city). */
-function overWater(x0: number, w: number, seed: string): boolean {
-  for (let sx = x0; sx <= x0 + w; sx += 24) {
-    if (regionAt(sx, seed) !== REGION_CITY && inLake(sx, seed)) return true;
-  }
-  return false;
-}
-
-/** Whether a world-x column is open lake water (for the animated shimmer). */
-export function isWaterAt(x: number, seed: string): boolean {
-  return regionAt(x, seed) !== REGION_CITY && inLake(x, seed);
-}
-
-/** Lake surface y for a world-x column. */
-export function waterSurfaceY(x: number): number {
-  return Math.round(LAKE_TOP + Math.sin(x * 0.06) * 4);
-}
-
-interface Rect {
+type PlanTag = "mount" | "distmount" | "flatmount";
+interface PlannedItem {
+  tag: PlanTag;
   x: number;
   y: number;
-  w: number;
-  h: number;
 }
 
-function overlaps(a: Rect, b: Rect): boolean {
-  return (
-    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
-  );
+function noiseFieldFns(noise: Perlin["noise"]) {
+  const samp = 0.03;
+  return {
+    ns: (x: number, y: number) => Math.max(noise(x * samp, y * samp) - 0.55, 0) * 2,
+    yr: (x: number) => noise(x * 0.01, Math.PI),
+  };
 }
 
-function groundFree(
-  r: Rect,
-  x0: number,
-  seed: string,
-  occupied: Rect[],
-): boolean {
-  if (r.x < 0 || r.y < 0 || r.x + r.w > CHUNK_W || r.y + r.h > VIEW_H) {
-    return false;
+function mountplanner(xmin: number, xmax: number, seed: string, perlin: Perlin): PlannedItem[] {
+  const noise = perlin.noise.bind(perlin);
+  const { ns, yr } = noiseFieldFns(noise);
+  const scanMin = xmin - PLAN_PAD;
+  const scanMax = xmax + PLAN_PAD;
+
+  function locmax(x: number, y: number, r = 2): boolean {
+    const z0 = ns(x, y);
+    if (z0 <= 0.3) return false;
+    for (let i = x - r; i < x + r; i++) {
+      for (let j = y - r; j < y + r; j++) {
+        if (ns(i, j) > z0) return false;
+      }
+    }
+    return true;
   }
-  for (let lx = r.x; lx < r.x + r.w; lx += 16) {
-    const wx = x0 + lx;
-    const region = regionAt(wx, seed);
-    const [pt, pb] = pathBand(wx, seed, region);
-    if (pt < r.y + r.h && pb > r.y) return false;
-    if (region !== REGION_CITY && inLake(wx, seed) && r.y + r.h > LAKE_TOP) {
-      return false;
+
+  const reg: PlannedItem[] = [];
+  function chadd(item: PlannedItem, mind = 10): boolean {
+    for (const r of reg) if (Math.abs(r.x - item.x) < mind) return false;
+    reg.push(item);
+    return true;
+  }
+
+  const planmtx = new Map<number, number>();
+  const cellOf = (x: number) => Math.floor(x / XSTEP);
+
+  for (let i = scanMin; i < scanMax; i += XSTEP) {
+    const top = yr(i) * 480;
+    for (let j = 0; j < top; j += 30) {
+      if (!locmax(i, j)) continue;
+      const peakRng = keyRng(seed, "peak", Math.round(i), j);
+      const xof = i + 2 * (peakRng() - 0.5) * 500;
+      const yof = j + 300;
+      if (chadd({ tag: "mount", x: xof, y: yof })) {
+        const lo = Math.floor((xof - MOUNT_WIDTH) / XSTEP);
+        const hi = Math.floor((xof + MOUNT_WIDTH) / XSTEP);
+        for (let k = lo; k < hi; k++) planmtx.set(k, (planmtx.get(k) ?? 0) + 1);
+      }
+    }
+    if (Math.abs(i) % 1000 < Math.max(1, XSTEP - 1)) {
+      const distRng = keyRng(seed, "distmount-pos", Math.round(i));
+      chadd({ tag: "distmount", x: i, y: 280 - distRng() * 50 });
     }
   }
-  for (const o of occupied) {
-    if (overlaps(r, o)) return false;
+
+  for (let i = scanMin; i < scanMax; i += XSTEP) {
+    if ((planmtx.get(cellOf(i)) ?? 0) !== 0) continue;
+    const flatRng = keyRng(seed, "flatmount-chance", Math.round(i));
+    if (flatRng() >= 0.01) continue;
+    const n = Math.floor(flatRng() * 4);
+    for (let j = 0; j < n; j++) {
+      const itemRng = keyRng(seed, "flatmount-pos", Math.round(i), j);
+      chadd({ tag: "flatmount", x: i + 2 * (itemRng() - 0.5) * 700, y: 700 - j * 50 });
+    }
   }
-  return true;
+
+  return reg.filter((r) => r.x >= xmin && r.x < xmax);
 }
 
-/** Generate a full-height chunk (world x in [k*CHUNK_W, (k+1)*CHUNK_W)). */
-export function generateChunk(seed: string, k: number): Pixmap {
-  const pm = new Pixmap(CHUNK_W, VIEW_H);
-  const x0 = k * CHUNK_W;
-  const region = regionAt(x0 + CHUNK_W / 2, seed);
-  const grassSeed = hashString(seed + ":grass");
-  const waterSeed = hashString(seed + ":water");
-  const roadSeed = hashString(seed + ":road");
+function renderItem(item: PlannedItem, seed: string, perlin: Perlin): ChunkPiece[] {
+  const noise = perlin.noise.bind(perlin);
+  const key = [Math.round(item.x), Math.round(item.y)] as const;
 
-  // far hills (hazy)
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const top = Math.round(farHillTop(x0 + lx, seed));
-    for (let y = top; y < HORIZON; y++) pm.set(lx, y, C.treelineHaze);
+  if (item.tag === "mount") {
+    const mountRng = keyRng(seed, "mount", ...key);
+    const svg = mountain(item.x, item.y, mountRng() * 200, {}, mountRng, noise);
+    const waterRng = keyRng(seed, "water", ...key);
+    const wsvg = water(item.x, item.y, {}, waterRng, noise);
+    return [
+      { x: item.x, y: item.y, svg },
+      { x: item.x, y: item.y - 10000, svg: wsvg },
+    ];
   }
-
-  // mid hills (forested)
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const top = Math.round(midHillTop(x0 + lx, seed));
-    for (let y = top; y < HORIZON; y++) {
-      pm.set(lx, y, y - top < 4 ? C.treelineDark : C.treeline);
-    }
+  if (item.tag === "flatmount") {
+    const rng = keyRng(seed, "flatmount", ...key);
+    const svg = flatMount(
+      item.x,
+      item.y,
+      rng() * 2 * Math.PI,
+      { wid: 600 + rng() * 400, hei: 100, cho: 0.5 + rng() * 0.2 },
+      rng,
+      noise,
+    );
+    return [{ x: item.x, y: item.y, svg }];
   }
-
-  // ground (smooth region blending + ambient tone)
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const wx = x0 + lx;
-    const { urban, forest } = regionWeights(wx, seed);
-    const tone = fbm1D(wx / 1800, seed + ":tone", 2);
-    for (let y = HORIZON; y < VIEW_H; y++) {
-      const n = noise2i(grassSeed, wx >> 1, y >> 1);
-      let c = C.grass;
-      if (n < 0.04) c = C.grassDark;
-      else if (n > 0.96) c = C.grassLight;
-      if (tone > 0.62) c = ditherPick(C.grassLight, c, (tone - 0.62) * 1.8, wx, y);
-      else if (tone < 0.38) c = ditherPick(C.grassDark, c, (0.38 - tone) * 1.8, wx, y);
-      if (forest > 0) c = ditherPick(C.grassDark, c, forest, wx, y);
-      if (urban > 0) c = ditherPick(C.roadLight, c, urban, wx, y);
-      if (urban > 0.8) {
-        const pn = noise2i(roadSeed, wx >> 1, y >> 1);
-        if (pn < 0.05) c = C.roadDark;
-      }
-      pm.set(lx, y, c);
-    }
-  }
-
-  // lake (bottom water, non-city only)
-  if (region !== REGION_CITY) {
-    for (let lx = 0; lx < CHUNK_W; lx++) {
-      const wx = x0 + lx;
-      if (regionAt(wx, seed) === REGION_CITY) continue;
-      if (!inLake(wx, seed)) continue;
-      const surf = Math.round(LAKE_TOP + Math.sin(wx * 0.06) * 4);
-      for (let y = surf; y < VIEW_H; y++) {
-        const n = noise2i(waterSeed, wx, y);
-        pm.set(lx, y, n < 0.05 ? C.waterDark : C.water);
-      }
-      pm.set(lx, surf, C.shore);
-      pm.set(lx, surf + 1, C.shore);
-      pm.set(lx, surf + 2, C.pathDark);
-      pm.set(lx, surf + 3, C.waterBright);
-    }
-  }
-
-  // objects (region-dependent)
-  const occupied: Rect[] = [];
-  let trainerRect: Rect | null = null;
-  let trainerVariant = 0;
-
-  if (region === REGION_CITY) {
-    // buildings along the sidewalk above the road
-    const bRng = keyRng(seed, "city", k);
-    const n = 2 + Math.floor(bRng() * 3);
-    for (let i = 0; i < n; i++) {
-      const bx = 8 + Math.floor(bRng() * (CHUNK_W - BUILDING_W - 16));
-      const wx = x0 + bx + BUILDING_W / 2;
-      const [pt] = pathBand(wx, seed, REGION_CITY);
-      const by = pt - BUILDING_H - 10;
-      const r: Rect = { x: bx, y: by, w: BUILDING_W, h: BUILDING_H };
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      occupied.push(r);
-      pm.fillEllipse(bx + BUILDING_W / 2, by + BUILDING_H - 3, 34, 5, C.roadDark);
-      blit(pm, buildingPixmap(Math.floor(bRng() * 3)), bx, by);
-    }
-  } else {
-    // trainer (route only)
-    const trainerRng = keyRng(seed, "trainer", k);
-    if (region === REGION_ROUTE && trainerRng() < 0.35) {
-      trainerVariant = Math.floor(trainerRng() * 3);
-      const tx = 32 + Math.floor(trainerRng() * (CHUNK_W - 96));
-      const wx = x0 + tx + TRAINER_W / 2;
-      const base = Math.round(pathCenter(wx, seed));
-      const ty = base - TRAINER_H;
-      if (ty > HORIZON && base + 4 < VIEW_H) {
-        trainerRect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
-        occupied.push(trainerRect);
-      }
-    }
-
-    // trees (denser in forest)
-    const treeRng = keyRng(seed, "trees", k);
-    for (const ty of [96, 256]) {
-      const prob = ty === 96 ? (region === REGION_FOREST ? 0.5 : 0.28) : (region === REGION_FOREST ? 0.35 : 0.2);
-      for (let tx = 0; tx <= CHUNK_TILES - 2; tx += 2) {
-        if (treeRng() > prob) continue;
-        const jx = tx * TILE + Math.floor((treeRng() * 2 - 1) * 10);
-        const r: Rect = {
-          x: Math.max(0, Math.min(CHUNK_W - TREE_W, jx)),
-          y: ty,
-          w: TREE_W,
-          h: TREE_H,
-        };
-        if (!groundFree(r, x0, seed, occupied)) continue;
-        occupied.push(r);
-        pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
-        blit(pm, treePixmap(Math.floor(treeRng() * 3)), r.x, r.y);
-      }
-    }
-
-    // berry trees
-    const berryRng = keyRng(seed, "berry", k);
-    if (berryRng() < 0.3) {
-      const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
-      const r: Rect = { x: bx, y: 96, w: TREE_W, h: TREE_H };
-      if (groundFree(r, x0, seed, occupied)) {
-        occupied.push(r);
-        pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
-        blit(pm, berryTreePixmap(), r.x, r.y);
-      }
-    }
-
-    // berry bushes
-    const bushRng = keyRng(seed, "bush", k);
-    const bushes = 2 + Math.floor(bushRng() * 3);
-    for (let i = 0; i < bushes; i++) {
-      const bx = Math.floor(bushRng() * (CHUNK_W - 32));
-      const by = bushRng() < 0.5 ? 96 : 224;
-      const r: Rect = { x: bx, y: by, w: 32, h: 32 };
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      occupied.push(r);
-      pm.fillEllipse(r.x + 16, r.y + 29, 12, 3, C.grassDark);
-      blit(pm, berryBushPixmap(keyRng(seed, "bushtile", k, i)), r.x, r.y);
-    }
-
-    // tall grass patches
-    const tallRng = keyRng(seed, "tall", k);
-    const patches = 2 + Math.floor(tallRng() * 3);
-    for (let i = 0; i < patches; i++) {
-      const tx = Math.floor(tallRng() * (CHUNK_TILES - 2));
-      const wy = tallRng() < 0.5 ? 128 : 256;
-      const wide = tallRng() < 0.4 ? 2 : 1;
-      const r: Rect = { x: tx * TILE, y: wy, w: TILE * wide, h: TILE };
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      occupied.push(r);
-      for (let t = 0; t < wide; t++) {
-        blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), r.x + t * TILE, r.y);
-      }
-    }
-
-    // flower clusters
-    const flowerRng = keyRng(seed, "flower", k);
-    const clusters = 2 + Math.floor(flowerRng() * 3);
-    for (let i = 0; i < clusters; i++) {
-      const cx = Math.floor(flowerRng() * CHUNK_W);
-      const cy = flowerRng() < 0.5 ? 144 : 240;
-      const n = 2 + Math.floor(flowerRng() * 3);
-      for (let f = 0; f < n; f++) {
-        const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
-        const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
-        const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
-        if (!groundFree(r, x0, seed, occupied)) continue;
-        blit(pm, flowerTile(keyRng(seed, "flowertile", k, i, f)), r.x, r.y);
-      }
-    }
-
-    // fence run (route only)
-    if (region === REGION_ROUTE) {
-      const fenceRng = keyRng(seed, "fence", k);
-      if (fenceRng() < 0.4) {
-        const start = Math.floor(fenceRng() * 8) * TILE;
-        const segs = 4 + Math.floor(fenceRng() * 6);
-        for (let s = 0; s < segs; s++) {
-          const lx = start + s * TILE;
-          if (lx + TILE > CHUNK_W) break;
-          const wx = x0 + lx + 16;
-          const [, pb] = pathBand(wx, seed, REGION_ROUTE);
-          const fy = pb + 8;
-          if (fy + TILE > VIEW_H) continue;
-          const r: Rect = { x: lx, y: fy, w: TILE, h: TILE };
-          if (!groundFree(r, x0, seed, occupied)) continue;
-          occupied.push(r);
-          blit(pm, fencePixmap(keyRng(seed, "ft", k, s)), lx, fy);
-        }
-      }
-    }
-  }
-
-  // path / road (smooth dirt↔road blend, wider in cities, fades in forest)
-  const pathSeed = hashString(seed + ":path");
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const wx = x0 + lx;
-    const { urban, forest } = regionWeights(wx, seed);
-    if (forest > 0.8) continue;
-    const center = Math.round(pathCenter(wx, seed));
-    const half = 26 + urban * 10;
-    const pt = center - Math.round(half);
-    const pb = center + Math.round(half);
-    for (let y = pt; y <= pb; y++) {
-      if (y < HORIZON || y >= VIEW_H) continue;
-      const n = noise2i(pathSeed, wx, y);
-      let c: number;
-      if (y === pt || y === pb) c = C.pathEdge;
-      else if (y === pt + 1 || y === pb - 1) c = C.pathLight;
-      else if (n < 0.06) c = C.pathDark;
-      else if (n > 0.94) c = C.pathLight;
-      else c = C.path;
-      if (urban > 0) {
-        let r: number;
-        if (y === pt || y === pb) r = C.roadDark;
-        else if (y === pt + 1 || y === pb - 1) r = C.roadLight;
-        else if (n < 0.06) r = C.roadDark;
-        else if (n > 0.94) r = C.roadLight;
-        else r = C.road;
-        c = ditherPick(r, c, urban, wx, y);
-      }
-      if (forest > 0) c = ditherPick(C.grassDark, c, forest * 1.1, wx, y);
-      pm.set(lx, y, c);
-    }
-  }
-
-  // trainer drawn last, standing on the path
-  if (trainerRect) {
-    pm.fillEllipse(trainerRect.x + TRAINER_W / 2, trainerRect.y + TRAINER_H - 2, 12, 3, C.pathDark);
-    blit(pm, trainerPixmap(trainerVariant), trainerRect.x, trainerRect.y);
-  }
-
-  // city street furniture (drawn after the road)
-  if (region === REGION_CITY) {
-    const lampRng = keyRng(seed, "lamp", k);
-    const nLamps = 2 + Math.floor(lampRng() * 2);
-    for (let i = 0; i < nLamps; i++) {
-      const lx = 16 + Math.floor(lampRng() * (CHUNK_W - 48));
-      const wx = x0 + lx + 12;
-      const [, pb] = pathBand(wx, seed, REGION_CITY);
-      const ly = pb + 2;
-      if (ly + 56 > VIEW_H) continue;
-      blit(pm, streetlampPixmap(keyRng(seed, "lt", k, i)), lx, ly);
-    }
-
-    const benchRng = keyRng(seed, "bench", k);
-    const nBenches = Math.floor(benchRng() * 2);
-    for (let i = 0; i < nBenches; i++) {
-      const bx = 16 + Math.floor(benchRng() * (CHUNK_W - 72));
-      const wx = x0 + bx + 20;
-      const [pt] = pathBand(wx, seed, REGION_CITY);
-      const by = pt - 20;
-      const r: Rect = { x: bx, y: by, w: 40, h: 20 };
-      if (by < HORIZON) continue;
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      blit(pm, benchPixmap(keyRng(seed, "bt", k, i)), bx, by);
-    }
-
-    const fbRng = keyRng(seed, "flowerbed", k);
-    const nFb = 1 + Math.floor(fbRng() * 2);
-    for (let i = 0; i < nFb; i++) {
-      const fx = 16 + Math.floor(fbRng() * (CHUNK_W - 64));
-      const wx = x0 + fx + 16;
-      const [pt] = pathBand(wx, seed, REGION_CITY);
-      const fy = pt - 16;
-      const r: Rect = { x: fx, y: fy, w: 32, h: 14 };
-      if (fy < HORIZON) continue;
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      blit(pm, flowerBedPixmap(keyRng(seed, "fbt", k, i)), fx, fy);
-    }
-  }
-
-  return pm;
+  // distmount
+  const rng = keyRng(seed, "distmount", ...key);
+  const svg = distMount(item.x, item.y, rng() * 100, { hei: 150, len: randChoice(rng, [500, 1000, 1500]) }, rng, noise);
+  return [{ x: item.x, y: item.y, svg }];
 }
 
-/**
- * Foreground parallax layer: oversized near objects along the bottom edge,
- * rendered transparent elsewhere. Scrolled faster than the background by the
- * renderer for depth.
- */
-export function generateForeground(seed: string, k: number): Pixmap {
-  const pm = new Pixmap(CHUNK_W, VIEW_H);
-  const rng = keyRng(seed, "fg", k);
-  const nTrees = 1 + Math.floor(rng() * 2);
-  for (let i = 0; i < nTrees; i++) {
-    const scale = 1.7 + rng() * 0.5;
-    const w = Math.round(TREE_W * scale);
-    const h = Math.round(TREE_H * scale);
-    const tx = Math.floor(rng() * (CHUNK_W - w));
-    if (overWater(k * CHUNK_W + tx, w, seed)) continue;
-    const ty = VIEW_H - h + 8;
-    pm.fillEllipse(tx + w / 2, VIEW_H - 7, w * 0.3, 5, C.grassDark);
-    blitScaled(pm, treePixmap(Math.floor(rng() * 3)), tx, ty, scale);
-  }
-  if (rng() < 0.7) {
-    const scale = 1.6 + rng() * 0.5;
-    const w = Math.round(32 * scale);
-    const tx = Math.floor(rng() * (CHUNK_W - w));
-    if (!overWater(k * CHUNK_W + tx, w, seed)) {
-      pm.fillEllipse(tx + w / 2, VIEW_H - 5, w * 0.4, 4, C.grassDark);
-      blitScaled(pm, berryBushPixmap(keyRng(seed, "fgb", k)), tx, VIEW_H - Math.round(32 * scale), scale);
-    }
-  }
-  return pm;
+/** All ink pieces anchored in world-x chunk `k` (i.e. x in [k*CHUNK_W, (k+1)*CHUNK_W)). */
+export function generateChunk(seed: string, k: number, perlin: Perlin): ChunkPiece[] {
+  const xmin = k * CHUNK_W;
+  const xmax = xmin + CHUNK_W;
+  const items = mountplanner(xmin, xmax, seed, perlin);
+  const pieces: ChunkPiece[] = [];
+  for (const item of items) pieces.push(...renderItem(item, seed, perlin));
+  return pieces;
 }
