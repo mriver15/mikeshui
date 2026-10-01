@@ -50,6 +50,80 @@ const REGION_ROUTE = 0;
 const REGION_FOREST = 1;
 const REGION_CITY = 2;
 
+/**
+ * What spawns in a region and how often — the one place to edit when
+ * adding a new region, instead of hunting down `region === REGION_X`
+ * checks scattered through generateChunk. Deliberately does NOT cover
+ * ground/path color: that's a continuous 2-axis blend (see
+ * `regionWeights` below), a different mechanism, and today route and
+ * forest already share identical ground colors — only city differs,
+ * already handled by the urban blend. A region whose ground color needs
+ * to differ (sand, snow, ...) is a real follow-up, not solved here.
+ */
+interface RegionConfig {
+  name: string;
+  hasPatches: boolean;
+  hasLake: boolean;
+  hasTrainer: boolean;
+  treeDensityUpland: number;
+  treeDensityLowland: number;
+  hasBerryTree: boolean;
+  hasBushes: boolean;
+  hasTallGrass: boolean;
+  hasFlowers: boolean;
+  hasFence: boolean;
+  hasBuildings: boolean;
+  hasStreetFurniture: boolean;
+}
+
+const REGION_CONFIGS: Record<number, RegionConfig> = {
+  [REGION_ROUTE]: {
+    name: "route",
+    hasPatches: true,
+    hasLake: true,
+    hasTrainer: true,
+    treeDensityUpland: 0.3,
+    treeDensityLowland: 0.22,
+    hasBerryTree: true,
+    hasBushes: true,
+    hasTallGrass: true,
+    hasFlowers: true,
+    hasFence: true,
+    hasBuildings: false,
+    hasStreetFurniture: false,
+  },
+  [REGION_FOREST]: {
+    name: "forest",
+    hasPatches: true,
+    hasLake: true,
+    hasTrainer: false,
+    treeDensityUpland: 0.55,
+    treeDensityLowland: 0.4,
+    hasBerryTree: true,
+    hasBushes: true,
+    hasTallGrass: true,
+    hasFlowers: true,
+    hasFence: false,
+    hasBuildings: false,
+    hasStreetFurniture: false,
+  },
+  [REGION_CITY]: {
+    name: "city",
+    hasPatches: false,
+    hasLake: false,
+    hasTrainer: false,
+    treeDensityUpland: 0,
+    treeDensityLowland: 0,
+    hasBerryTree: false,
+    hasBushes: false,
+    hasTallGrass: false,
+    hasFlowers: false,
+    hasFence: false,
+    hasBuildings: true,
+    hasStreetFurniture: true,
+  },
+};
+
 function regionAt(x: number, seed: string): number {
   const v = fbm1D(x / 8000, seed + ":region", 3);
   if (v > 0.72) return REGION_CITY;
@@ -168,6 +242,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
   const x0 = k * CHUNK_W;
   const region = regionAt(x0 + CHUNK_W / 2, seed);
+  const cfg = REGION_CONFIGS[region];
   const grassSeed = hashString(seed + ":grass");
   const waterSeed = hashString(seed + ":water");
   const roadSeed = hashString(seed + ":road");
@@ -254,7 +329,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
   // dithered gradient — closer to how tile art actually varies open
   // ground, and reads as a deliberate feature rather than noise. Skipped
   // in the city itself, where ground is paving, not grass.
-  if (region !== REGION_CITY) {
+  if (cfg.hasPatches) {
     const patchRng = keyRng(seed, "patch", k);
     const nPatches = 1 + Math.floor(patchRng() * 2);
     for (let i = 0; i < nPatches; i++) {
@@ -285,7 +360,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
   }
 
   // lake (bottom water, non-city only)
-  if (region !== REGION_CITY) {
+  if (cfg.hasLake) {
     for (let lx = 0; lx < CHUNK_W; lx++) {
       const wx = x0 + lx;
       if (regionAt(wx, seed) === REGION_CITY) continue;
@@ -316,7 +391,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
   let trainerRect: Rect | null = null;
   let trainerVariant = 0;
 
-  if (region === REGION_CITY) {
+  if (cfg.hasBuildings) {
     // buildings along the sidewalk above the road
     const bRng = keyRng(seed, "city", k);
     const n = 2 + Math.floor(bRng() * 3);
@@ -346,7 +421,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
 
     // trainer (route only)
     const trainerRng = keyRng(seed, "trainer", k);
-    if (region === REGION_ROUTE && trainerRng() < 0.35) {
+    if (cfg.hasTrainer && trainerRng() < 0.35) {
       trainerVariant = Math.floor(trainerRng() * 3);
       const tx = 32 + Math.floor(trainerRng() * (CHUNK_W - 96));
       const wx = x0 + tx + TRAINER_W / 2;
@@ -365,7 +440,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
       { y: BAND_UPLAND_TREE, jitter: 16 },
       { y: BAND_LOWLAND_TREE, jitter: 16 },
     ]) {
-      const prob = band.y === BAND_UPLAND_TREE ? (region === REGION_FOREST ? 0.55 : 0.3) : (region === REGION_FOREST ? 0.4 : 0.22);
+      const prob = band.y === BAND_UPLAND_TREE ? cfg.treeDensityUpland : cfg.treeDensityLowland;
       let tx = 0;
       while (tx <= CHUNK_TILES - 2) {
         const step = 1 + Math.floor(treeRng() * 3);
@@ -392,63 +467,71 @@ export function generateChunk(seed: string, k: number): Pixmap {
     }
 
     // berry trees
-    const berryRng = keyRng(seed, "berry", k);
-    if (berryRng() < 0.3) {
-      const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
-      const r: Rect = { x: bx, y: BAND_UPLAND_TREE, w: TREE_W, h: TREE_H };
-      if (notUrbanAt(x0 + bx + TREE_W / 2) && groundFree(r, x0, seed, occupied)) {
-        occupied.push(r);
-        pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
-        blit(pm, berryTreePixmap(), r.x, r.y);
+    if (cfg.hasBerryTree) {
+      const berryRng = keyRng(seed, "berry", k);
+      if (berryRng() < 0.3) {
+        const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
+        const r: Rect = { x: bx, y: BAND_UPLAND_TREE, w: TREE_W, h: TREE_H };
+        if (notUrbanAt(x0 + bx + TREE_W / 2) && groundFree(r, x0, seed, occupied)) {
+          occupied.push(r);
+          pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
+          blit(pm, berryTreePixmap(), r.x, r.y);
+        }
       }
     }
 
     // berry bushes
-    const bushRng = keyRng(seed, "bush", k);
-    const bushes = 2 + Math.floor(bushRng() * 3);
-    for (let i = 0; i < bushes; i++) {
-      const bx = Math.floor(bushRng() * (CHUNK_W - 32));
-      const by = bushRng() < 0.5 ? BAND_UPLAND_BUSH : BAND_LOWLAND_BUSH;
-      const r: Rect = { x: bx, y: by, w: 32, h: 32 };
-      if (!notUrbanAt(x0 + bx + 16) || !groundFree(r, x0, seed, occupied)) continue;
-      occupied.push(r);
-      pm.fillEllipse(r.x + 16, r.y + 29, 12, 3, C.grassDark);
-      blit(pm, berryBushPixmap(keyRng(seed, "bushtile", k, i)), r.x, r.y);
+    if (cfg.hasBushes) {
+      const bushRng = keyRng(seed, "bush", k);
+      const bushes = 2 + Math.floor(bushRng() * 3);
+      for (let i = 0; i < bushes; i++) {
+        const bx = Math.floor(bushRng() * (CHUNK_W - 32));
+        const by = bushRng() < 0.5 ? BAND_UPLAND_BUSH : BAND_LOWLAND_BUSH;
+        const r: Rect = { x: bx, y: by, w: 32, h: 32 };
+        if (!notUrbanAt(x0 + bx + 16) || !groundFree(r, x0, seed, occupied)) continue;
+        occupied.push(r);
+        pm.fillEllipse(r.x + 16, r.y + 29, 12, 3, C.grassDark);
+        blit(pm, berryBushPixmap(keyRng(seed, "bushtile", k, i)), r.x, r.y);
+      }
     }
 
     // tall grass patches
-    const tallRng = keyRng(seed, "tall", k);
-    const patches = 2 + Math.floor(tallRng() * 3);
-    for (let i = 0; i < patches; i++) {
-      const tx = Math.floor(tallRng() * (CHUNK_TILES - 2));
-      const wy = tallRng() < 0.5 ? BAND_UPLAND_TALLGRASS : BAND_LOWLAND_TALLGRASS;
-      const wide = tallRng() < 0.4 ? 2 : 1;
-      const r: Rect = { x: tx * TILE, y: wy, w: TILE * wide, h: TILE };
-      if (!notUrbanAt(x0 + r.x + r.w / 2) || !groundFree(r, x0, seed, occupied)) continue;
-      occupied.push(r);
-      for (let t = 0; t < wide; t++) {
-        blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), r.x + t * TILE, r.y);
+    if (cfg.hasTallGrass) {
+      const tallRng = keyRng(seed, "tall", k);
+      const patches = 2 + Math.floor(tallRng() * 3);
+      for (let i = 0; i < patches; i++) {
+        const tx = Math.floor(tallRng() * (CHUNK_TILES - 2));
+        const wy = tallRng() < 0.5 ? BAND_UPLAND_TALLGRASS : BAND_LOWLAND_TALLGRASS;
+        const wide = tallRng() < 0.4 ? 2 : 1;
+        const r: Rect = { x: tx * TILE, y: wy, w: TILE * wide, h: TILE };
+        if (!notUrbanAt(x0 + r.x + r.w / 2) || !groundFree(r, x0, seed, occupied)) continue;
+        occupied.push(r);
+        for (let t = 0; t < wide; t++) {
+          blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), r.x + t * TILE, r.y);
+        }
       }
     }
 
     // flower clusters
-    const flowerRng = keyRng(seed, "flower", k);
-    const clusters = 2 + Math.floor(flowerRng() * 3);
-    for (let i = 0; i < clusters; i++) {
-      const cx = Math.floor(flowerRng() * CHUNK_W);
-      const cy = flowerRng() < 0.5 ? BAND_UPLAND_FLOWER : BAND_LOWLAND_FLOWER;
-      const n = 2 + Math.floor(flowerRng() * 3);
-      for (let f = 0; f < n; f++) {
-        const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
-        const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
-        const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
-        if (!notUrbanAt(x0 + fx + TILE / 2) || !groundFree(r, x0, seed, occupied)) continue;
-        blit(pm, flowerTile(keyRng(seed, "flowertile", k, i, f)), r.x, r.y);
+    if (cfg.hasFlowers) {
+      const flowerRng = keyRng(seed, "flower", k);
+      const clusters = 2 + Math.floor(flowerRng() * 3);
+      for (let i = 0; i < clusters; i++) {
+        const cx = Math.floor(flowerRng() * CHUNK_W);
+        const cy = flowerRng() < 0.5 ? BAND_UPLAND_FLOWER : BAND_LOWLAND_FLOWER;
+        const n = 2 + Math.floor(flowerRng() * 3);
+        for (let f = 0; f < n; f++) {
+          const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
+          const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
+          const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
+          if (!notUrbanAt(x0 + fx + TILE / 2) || !groundFree(r, x0, seed, occupied)) continue;
+          blit(pm, flowerTile(keyRng(seed, "flowertile", k, i, f)), r.x, r.y);
+        }
       }
     }
 
     // fence run (route only)
-    if (region === REGION_ROUTE) {
+    if (cfg.hasFence) {
       const fenceRng = keyRng(seed, "fence", k);
       if (fenceRng() < 0.4) {
         const start = Math.floor(fenceRng() * 8) * TILE;
@@ -518,7 +601,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
   }
 
   // city street furniture (drawn after the road)
-  if (region === REGION_CITY) {
+  if (cfg.hasStreetFurniture) {
     const lampRng = keyRng(seed, "lamp", k);
     const nLamps = 2 + Math.floor(lampRng() * 2);
     for (let i = 0; i < nLamps; i++) {

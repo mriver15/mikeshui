@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { createHash } from "crypto";
 import { generateChunk, generateForeground, CHUNK_W, VIEW_H } from "./worldgen";
 
 const SEEDS = ["1790824785082", "42", "0", "-5", "hello world", "", "💥"];
@@ -45,6 +46,33 @@ describe("generateChunk", () => {
         expect(nonZero, `seed=${JSON.stringify(seed)} k=${k} was entirely empty`).toBe(true);
       }
     }
+  });
+});
+
+describe("generateChunk golden hash (refactor-safety net)", () => {
+  // Locks in the exact rendered output across a spread of seeds and chunk
+  // indices, as a sha256 digest. The point isn't the specific hash — it's
+  // that a *pure refactor* (reordering code, extracting config, renaming)
+  // should never change this value. It changed zero times across the whole
+  // region-config-table extraction that prompted adding this test, which is
+  // exactly the guarantee it's meant to give the next refactor too.
+  //
+  // If you're here because this test failed: that's expected after a
+  // deliberate visual/generation change (new decoration, retuned density,
+  // etc.) — verify the new output looks right (render it, don't just trust
+  // the number), then update GOLDEN_HASH below to the printed "received" value.
+  const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
+  const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
+  const GOLDEN_HASH = "afb7ecf1c709ed7b7a059488f52adfc0fe0180c314c97872534956dd57d33e5c";
+
+  it("matches the recorded golden hash", () => {
+    const hash = createHash("sha256");
+    for (const seed of GOLDEN_SEEDS) {
+      for (const k of GOLDEN_CHUNKS) {
+        hash.update(generateChunk(seed, k).data);
+      }
+    }
+    expect(hash.digest("hex")).toBe(GOLDEN_HASH);
   });
 });
 
