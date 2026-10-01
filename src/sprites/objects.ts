@@ -183,13 +183,39 @@ export function trainerPixmap(variant = 0): Pixmap {
 export const BUILDING_W = 96;
 export const BUILDING_H = 72;
 
+interface HouseStyle {
+  roof: number;
+  roofDark: number;
+  roofLight: number;
+  wall: number;
+  wallShade: number;
+}
+
+/**
+ * House color palettes, each sampled from a different real Gen-3 building
+ * style (the red-tile suburban house, an orange wood cabin, a mossy green
+ * roof, a cool gray-slate building) so procedurally-varied houses still
+ * look like they belong to the same game instead of random hue-shifts.
+ */
+const HOUSE_STYLES: HouseStyle[] = [
+  { roof: C.houseRoof, roofDark: C.houseRoofDark, roofLight: C.houseRoofLight, wall: C.houseWall, wallShade: C.houseWallShade },
+  { roof: C.roofOrange, roofDark: C.roofOrangeDark, roofLight: C.roofOrangeLight, wall: C.wallTan, wallShade: C.wallTanShade },
+  { roof: C.roofGreen, roofDark: C.roofGreenDark, roofLight: C.treeLight, wall: C.houseWall, wallShade: C.houseWallShade },
+  { roof: C.houseWallShade, roofDark: C.trunkDark, roofLight: C.houseWall, wall: C.wallTan, wallShade: C.wallTanShade },
+];
+
 /**
  * A city building: gabled roof, wall with windows and a door, optional sign.
- * `type`: 0 = house, 1 = Poké Center, 2 = Poké Mart.
+ * `type`: 0 = house, 1 = Poké Center, 2 = Poké Mart. Houses (type 0) are
+ * procedurally varied from `rng` — color style, window count, and whether
+ * there's a chimney or a flower box — so a street of them doesn't read as
+ * the same building copy-pasted; Center/Mart keep a fixed, recognizable
+ * look since their color is also their in-game signage.
  */
-export function buildingPixmap(type = 0): Pixmap {
+export function buildingPixmap(type = 0, rng?: RNG): Pixmap {
+  const houseStyle = HOUSE_STYLES[type === 0 && rng ? Math.floor(rng() * HOUSE_STYLES.length) : 0];
   const styles = [
-    { roof: C.houseRoof, roofDark: C.houseRoofDark, roofLight: C.houseRoofLight, wall: C.houseWall, wallShade: C.houseWallShade, sign: null as number | null, dome: false },
+    { ...houseStyle, sign: null as number | null, dome: false },
     { roof: C.houseRoof, roofDark: C.houseRoofDark, roofLight: C.houseRoofLight, wall: C.houseWall, wallShade: C.houseWallShade, sign: C.houseRoof as number | null, dome: true },
     { roof: C.water, roofDark: C.waterDeep, roofLight: C.waterLight, wall: C.houseWall, wallShade: C.houseWallShade, sign: C.water as number | null, dome: true },
   ];
@@ -197,6 +223,10 @@ export function buildingPixmap(type = 0): Pixmap {
   const p = new Pixmap(BUILDING_W, BUILDING_H);
   const cx = 48;
   const roofBaseY = 30;
+  const checkerRoof = type !== 0 || !rng || rng() > 0.3;
+  const chimney = type === 0 && rng && rng() < 0.35;
+  const flowerBox = type === 0 && rng && rng() < 0.4;
+  const twoWindows = type !== 0 || !rng || rng() < 0.7;
 
   if (s.dome) {
     // Poke Center / Mart: a rounded dome roof (an outlined ellipse, clipped
@@ -215,23 +245,36 @@ export function buildingPixmap(type = 0): Pixmap {
     p.fillCircle(ex, ey, 3, C.black);
     p.fillCircle(ex, ey, 2, C.houseTrim);
   } else {
-    // house: a triangular gable with a diamond-checker shingle texture
-    // (two alternating roof shades in a brick-offset grid), per-row offset
-    // so it reads as diamonds rather than a plain grid.
+    // house: a triangular gable, optionally with a diamond-checker shingle
+    // texture (two alternating roof shades in a brick-offset grid, per-row
+    // offset so it reads as diamonds rather than a plain grid).
     const roofApexY = 3;
     const roofHalf = 44;
     p.fillTriangle(cx, roofApexY - 1, cx - roofHalf - 2, roofBaseY + 2, cx + roofHalf + 2, roofBaseY + 2, s.roofDark);
-    for (let y = roofApexY; y < roofBaseY; y++) {
-      const t = (y - roofApexY) / (roofBaseY - roofApexY);
-      const halfW = roofHalf * t;
-      const rowOffset = y % 4 < 2 ? 0 : 2;
-      for (let x = Math.ceil(cx - halfW); x <= Math.floor(cx + halfW); x++) {
-        const block = Math.floor((x + rowOffset) / 4);
-        p.set(x, y, block % 2 === 0 ? s.roof : s.roofLight);
+    if (checkerRoof) {
+      for (let y = roofApexY; y < roofBaseY; y++) {
+        const t = (y - roofApexY) / (roofBaseY - roofApexY);
+        const halfW = roofHalf * t;
+        const rowOffset = y % 4 < 2 ? 0 : 2;
+        for (let x = Math.ceil(cx - halfW); x <= Math.floor(cx + halfW); x++) {
+          const block = Math.floor((x + rowOffset) / 4);
+          p.set(x, y, block % 2 === 0 ? s.roof : s.roofLight);
+        }
       }
+    } else {
+      p.fillTriangle(cx, roofApexY, cx - roofHalf, roofBaseY, cx + roofHalf, roofBaseY, s.roof);
     }
     p.fillTriangle(cx, roofApexY, cx - roofHalf, roofBaseY, cx - roofHalf * 0.2, roofBaseY, s.roofDark);
     p.fillRect(cx - 1, roofApexY, 2, roofBaseY - roofApexY, s.roofDark);
+
+    if (chimney) {
+      const dx = 22;
+      const t = dx / roofHalf;
+      const roofY = Math.round(roofApexY + t * (roofBaseY - roofApexY));
+      p.fillRect(cx - dx - 3, roofY - 12, 7, 15, s.roofDark);
+      p.fillRect(cx - dx - 2, roofY - 11, 5, 12, C.wood);
+      p.fillRect(cx - dx - 3, roofY - 13, 8, 3, C.woodDark);
+    }
   }
   p.fillRect(6, roofBaseY - 1, 84, 2, s.roofDark);
 
@@ -256,12 +299,24 @@ export function buildingPixmap(type = 0): Pixmap {
   p.fillRect(44, by1 - 19, 8, 19, C.trunk);
   p.set(50, by1 - 9, C.houseTrim);
 
-  // windows (two)
-  for (const wx of [20, 66]) {
+  // windows
+  const windowXs = twoWindows ? [20, 66] : [20];
+  for (const wx of windowXs) {
     p.fillRect(wx - 1, 40, 10, 10, s.roofDark);
     p.fillRect(wx, 41, 8, 8, C.houseWindow);
     p.fillRect(wx + 3, 41, 2, 8, s.wall);
     p.fillRect(wx, 44, 8, 2, s.wall);
+  }
+
+  // flower box beneath the first window
+  if (flowerBox) {
+    const fx = windowXs[0];
+    p.fillRect(fx - 2, 51, 12, 4, C.woodDark);
+    p.fillRect(fx - 1, 50, 10, 3, C.wood);
+    const petals = [C.flowerRed, C.flowerYellow, C.flowerWhite];
+    for (let i = 0; i < 4; i++) {
+      p.set(fx + i * 2, 49, petals[i % petals.length]);
+    }
   }
 
   return p;

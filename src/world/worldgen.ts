@@ -199,11 +199,17 @@ export function generateChunk(seed: string, k: number): Pixmap {
         const floor = n > 0.85 ? C.grass : C.grassDark;
         c = ditherPick(floor, c, Math.min(forest, 0.9), wx >> 2, y >> 2);
       }
-      // fine-grained (not coarsened) and skipped once forest is established,
-      // so a trace of residual urban weight near a forest chunk can't paint
-      // visible gray blocks inside the woods (forest already excludes urban
-      // via regionWeights, but not all the way to exactly 0).
-      if (urban > 0 && forest < 0.3) c = ditherPick(C.roadLight, c, urban, wx, y);
+      // flat grass below the band, flat pavement above it, dithered only
+      // within a narrow transition — the same fix as the grass tone
+      // gradient: dithering the *entire* urban range produced a wide,
+      // visibly speckled "half-paved" zone across whole city chunks
+      // wherever the slow-moving region noise lingered mid-transition,
+      // rather than a believable sidewalk edge. Also skipped once forest
+      // is established, so residual urban weight can't fleck the woods.
+      if (forest < 0.3) {
+        if (urban > 0.65) c = C.roadLight;
+        else if (urban > 0.35) c = ditherPick(C.roadLight, c, (urban - 0.35) / 0.3, wx, y);
+      }
       if (urban > 0.8) {
         const pn = noise2i(roadSeed, wx >> 2, y >> 2);
         if (pn < 0.04) c = C.roadDark;
@@ -240,7 +246,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
       const wx = x0 + tx * TILE + TILE / 2;
       const wy = ty * TILE;
       const { urban, forest } = regionWeights(wx, seed);
-      if (urban > 0.2 || regionAt(wx, seed) === REGION_CITY) continue;
+      if (urban > 0.35 || regionAt(wx, seed) === REGION_CITY) continue;
       if (regionAt(wx, seed) !== REGION_CITY && inLake(wx, seed) && wy + TILE > LAKE_TOP) continue;
       const tileRng = keyRng(seed, "grasstick", x0 + tx * TILE, ty);
       blit(pm, grassTickTile(tileRng, forest > 0.3), tx * TILE, wy);
@@ -292,7 +298,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
       if (!groundFree(r, x0, seed, occupied)) continue;
       occupied.push(r);
       pm.fillEllipse(bx + BUILDING_W / 2, by + BUILDING_H - 3, 34, 5, C.roadDark);
-      blit(pm, buildingPixmap(Math.floor(bRng() * 3)), bx, by);
+      blit(pm, buildingPixmap(Math.floor(bRng() * 3), bRng), bx, by);
     }
   } else {
     // trainer (route only)
