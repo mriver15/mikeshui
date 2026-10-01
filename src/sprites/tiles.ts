@@ -24,6 +24,25 @@ export function tallGrassTile(rng: RNG): Pixmap {
   return p;
 }
 
+/**
+ * Sparse ground-texture ticks: a handful of 1-2px grass-blade marks per
+ * tile, GBA-dither style — authored, fixed-position-per-tile texture
+ * instead of continuous per-pixel noise, so open fields read as grass
+ * rather than static.
+ */
+export function grassTickTile(rng: RNG, dense: boolean): Pixmap {
+  const p = new Pixmap(TILE, TILE);
+  const n = dense ? 6 : 3;
+  for (let i = 0; i < n; i++) {
+    const x = Math.floor(rng() * TILE);
+    const y = Math.floor(rng() * TILE);
+    const c = rng() < 0.5 ? C.grassDark : C.grassLight;
+    p.set(x, y, c);
+    if (rng() < 0.6) p.set(x, Math.max(0, y - 1), c);
+  }
+  return p;
+}
+
 /** A single flower bloom on transparent background. */
 export function flowerTile(rng: RNG): Pixmap {
   const p = new Pixmap(TILE, TILE);

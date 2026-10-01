@@ -3,7 +3,7 @@ import { C } from "../core/palette";
 import { keyRng, noise2i, hashString } from "../core/prng";
 import { ditherPick, smoothstep } from "../core/dither";
 import { fbm1D } from "../core/perlin";
-import { tallGrassTile, flowerTile, TILE } from "../sprites/tiles";
+import { tallGrassTile, flowerTile, grassTickTile, TILE } from "../sprites/tiles";
 import {
   treePixmap,
   berryTreePixmap,
@@ -152,26 +152,59 @@ export function generateChunk(seed: string, k: number): Pixmap {
       pm.set(lx, y, y - top < 4 ? C.treelineDark : C.treeline);
     }
   }
+  // sparse tree-crown ticks on the mid hills — small discrete marks read as
+  // individual distant trees, instead of a flat silhouette block.
+  {
+    const hillTickRng = keyRng(seed, "hilltick", k);
+    const nTicks = Math.round(CHUNK_W / 10);
+    for (let i = 0; i < nTicks; i++) {
+      const lx = Math.floor(hillTickRng() * CHUNK_W);
+      const top = Math.round(midHillTop(x0 + lx, seed));
+      const y = top + 2 + Math.floor(hillTickRng() * 7);
+      if (y >= HORIZON) continue;
+      pm.set(lx, y, C.treelineDark);
+    }
+  }
 
-  // ground (smooth region blending + ambient tone)
+  // ground: flat per-region base color with broad (coarse-grained, not
+  // per-pixel) tone blending, so open fields read as a material rather than
+  // static. `forest` never fully saturates to a single flat index — it
+  // dithers toward a dark-but-still-varied floor, preserving texture even in
+  // dense woods (previously a worldgen bug: solid-color dead patches).
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
     const { urban, forest } = regionWeights(wx, seed);
     const tone = fbm1D(wx / 1800, seed + ":tone", 2);
     for (let y = HORIZON; y < VIEW_H; y++) {
-      const n = noise2i(grassSeed, wx >> 1, y >> 1);
       let c = C.grass;
-      if (n < 0.04) c = C.grassDark;
-      else if (n > 0.96) c = C.grassLight;
-      if (tone > 0.62) c = ditherPick(C.grassLight, c, (tone - 0.62) * 1.8, wx, y);
-      else if (tone < 0.38) c = ditherPick(C.grassDark, c, (0.38 - tone) * 1.8, wx, y);
-      if (forest > 0) c = ditherPick(C.grassDark, c, forest, wx, y);
-      if (urban > 0) c = ditherPick(C.roadLight, c, urban, wx, y);
+      if (tone > 0.62) c = ditherPick(C.grassLight, c, (tone - 0.62) * 1.8, wx >> 2, y >> 2);
+      else if (tone < 0.38) c = ditherPick(C.grassDark, c, (0.38 - tone) * 1.8, wx >> 2, y >> 2);
+      if (forest > 0) {
+        const n = noise2i(grassSeed, wx >> 2, y >> 2);
+        const floor = n > 0.85 ? C.grass : C.grassDark;
+        c = ditherPick(floor, c, Math.min(forest, 0.9), wx >> 2, y >> 2);
+      }
+      if (urban > 0) c = ditherPick(C.roadLight, c, urban, wx >> 2, y >> 2);
       if (urban > 0.8) {
-        const pn = noise2i(roadSeed, wx >> 1, y >> 1);
-        if (pn < 0.05) c = C.roadDark;
+        const pn = noise2i(roadSeed, wx >> 2, y >> 2);
+        if (pn < 0.04) c = C.roadDark;
       }
       pm.set(lx, y, c);
+    }
+  }
+
+  // grass ticks: sparse, per-tile-authored 1-2px blade marks (the "fine
+  // pixel lines" texture a GBA tileset actually uses) in place of continuous
+  // per-pixel noise. Denser in forest for an undergrowth feel.
+  for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
+    for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
+      const wx = x0 + tx * TILE + TILE / 2;
+      const wy = ty * TILE;
+      const { urban, forest } = regionWeights(wx, seed);
+      if (urban > 0.2 || regionAt(wx, seed) === REGION_CITY) continue;
+      if (regionAt(wx, seed) !== REGION_CITY && inLake(wx, seed) && wy + TILE > LAKE_TOP) continue;
+      const tileRng = keyRng(seed, "grasstick", x0 + tx * TILE, ty);
+      blit(pm, grassTickTile(tileRng, forest > 0.3), tx * TILE, wy);
     }
   }
 
@@ -228,23 +261,36 @@ export function generateChunk(seed: string, k: number): Pixmap {
       }
     }
 
-    // trees (denser in forest)
+    // trees (denser in forest; irregular spacing, position, and size so the
+    // treeline doesn't read as a ruled-off row of identical stamps)
     const treeRng = keyRng(seed, "trees", k);
-    for (const ty of [96, 256]) {
-      const prob = ty === 96 ? (region === REGION_FOREST ? 0.5 : 0.28) : (region === REGION_FOREST ? 0.35 : 0.2);
-      for (let tx = 0; tx <= CHUNK_TILES - 2; tx += 2) {
-        if (treeRng() > prob) continue;
-        const jx = tx * TILE + Math.floor((treeRng() * 2 - 1) * 10);
-        const r: Rect = {
-          x: Math.max(0, Math.min(CHUNK_W - TREE_W, jx)),
-          y: ty,
-          w: TREE_W,
-          h: TREE_H,
-        };
-        if (!groundFree(r, x0, seed, occupied)) continue;
-        occupied.push(r);
-        pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
-        blit(pm, treePixmap(Math.floor(treeRng() * 3)), r.x, r.y);
+    for (const band of [
+      { y: 96, jitter: 16 },
+      { y: 256, jitter: 16 },
+    ]) {
+      const prob = band.y === 96 ? (region === REGION_FOREST ? 0.55 : 0.3) : (region === REGION_FOREST ? 0.4 : 0.22);
+      let tx = 0;
+      while (tx <= CHUNK_TILES - 2) {
+        const step = 1 + Math.floor(treeRng() * 3);
+        if (treeRng() <= prob) {
+          const scale = 0.82 + treeRng() * 0.36;
+          const w = Math.round(TREE_W * scale);
+          const h = Math.round(TREE_H * scale);
+          const jx = tx * TILE + Math.floor((treeRng() * 2 - 1) * 10);
+          const jy = band.y + Math.floor((treeRng() * 2 - 1) * band.jitter);
+          const r: Rect = {
+            x: Math.max(0, Math.min(CHUNK_W - w, jx)),
+            y: jy,
+            w,
+            h,
+          };
+          if (groundFree(r, x0, seed, occupied)) {
+            occupied.push(r);
+            pm.fillEllipse(r.x + w / 2, r.y + h - 3, 20 * scale, 4, C.grassDark);
+            blitScaled(pm, treePixmap(Math.floor(treeRng() * 3)), r.x, r.y, scale);
+          }
+        }
+        tx += step;
       }
     }
 
