@@ -3,7 +3,7 @@ import { C } from "../core/palette";
 import { keyRng, noise2i, hashString } from "../core/prng";
 import { ditherPick, smoothstep } from "../core/dither";
 import { fbm1D } from "../core/perlin";
-import { tallGrassTile, flowerTile, grassTickTile, TILE } from "../sprites/tiles";
+import { tallGrassTile, flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
 import {
   treePixmap,
   berryTreePixmap,
@@ -156,10 +156,25 @@ export function generateChunk(seed: string, k: number): Pixmap {
   const waterSeed = hashString(seed + ":water");
   const roadSeed = hashString(seed + ":road");
 
-  // far hills (hazy)
+  // far hills (hazy) — a light ridge-top line and very sparse soft ticks
+  // so the band isn't a single flat fill, kept subtle since this layer
+  // should read as hazier/less detailed than the mid-hill band in front of it.
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const top = Math.round(farHillTop(x0 + lx, seed));
-    for (let y = top; y < HORIZON; y++) pm.set(lx, y, C.treelineHaze);
+    for (let y = top; y < HORIZON; y++) {
+      pm.set(lx, y, y - top < 2 ? C.treelineHazeLight : C.treelineHaze);
+    }
+  }
+  {
+    const farTickRng = keyRng(seed, "fartick", k);
+    const nTicks = Math.round(CHUNK_W / 24);
+    for (let i = 0; i < nTicks; i++) {
+      const lx = Math.floor(farTickRng() * CHUNK_W);
+      const top = Math.round(farHillTop(x0 + lx, seed));
+      const y = top + 3 + Math.floor(farTickRng() * 10);
+      if (y >= HORIZON) continue;
+      pm.set(lx, y, C.treelineHazeDark);
+    }
   }
 
   // mid hills (forested)
@@ -292,6 +307,11 @@ export function generateChunk(seed: string, k: number): Pixmap {
     for (let i = 0; i < n; i++) {
       const bx = 8 + Math.floor(bRng() * (CHUNK_W - BUILDING_W - 16));
       const wx = x0 + bx + BUILDING_W / 2;
+      // the chunk-wide `region` picks the city *branch*, but ground color is
+      // a continuous blend — without this, a building could land on ground
+      // that's still rendering as grass near a chunk's edge. Check the
+      // actual local weight, not just the chunk's one midpoint sample.
+      if (regionWeights(wx, seed).urban < 0.55) continue;
       const [pt] = pathBand(wx, seed, REGION_CITY);
       const by = pt - BUILDING_H - 10;
       const r: Rect = { x: bx, y: by, w: BUILDING_W, h: BUILDING_H };
@@ -301,6 +321,13 @@ export function generateChunk(seed: string, k: number): Pixmap {
       blit(pm, buildingPixmap(Math.floor(bRng() * 3), bRng), bx, by);
     }
   } else {
+    // route/forest decorations: same "chunk-wide branch picks the mode,
+    // but each candidate's own position must agree with the continuous
+    // ground blend" fix as the building placement above — otherwise a
+    // tree or fence post could land on ground that's locally rendering
+    // as pavement near a chunk that's close to a city.
+    const notUrbanAt = (wx: number) => regionWeights(wx, seed).urban < 0.4;
+
     // trainer (route only)
     const trainerRng = keyRng(seed, "trainer", k);
     if (region === REGION_ROUTE && trainerRng() < 0.35) {
@@ -309,7 +336,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
       const wx = x0 + tx + TRAINER_W / 2;
       const base = Math.round(pathCenter(wx, seed));
       const ty = base - TRAINER_H;
-      if (ty > HORIZON && base + 4 < VIEW_H) {
+      if (notUrbanAt(wx) && ty > HORIZON && base + 4 < VIEW_H) {
         trainerRect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
         occupied.push(trainerRect);
       }
@@ -338,7 +365,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
             w,
             h,
           };
-          if (groundFree(r, x0, seed, occupied)) {
+          if (notUrbanAt(x0 + r.x + w / 2) && groundFree(r, x0, seed, occupied)) {
             occupied.push(r);
             pm.fillEllipse(r.x + w / 2, r.y + h - 3, 20 * scale, 4, C.grassDark);
             blitScaled(pm, treePixmap(Math.floor(treeRng() * 3)), r.x, r.y, scale);
@@ -353,7 +380,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
     if (berryRng() < 0.3) {
       const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
       const r: Rect = { x: bx, y: 96, w: TREE_W, h: TREE_H };
-      if (groundFree(r, x0, seed, occupied)) {
+      if (notUrbanAt(x0 + bx + TREE_W / 2) && groundFree(r, x0, seed, occupied)) {
         occupied.push(r);
         pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
         blit(pm, berryTreePixmap(), r.x, r.y);
@@ -367,7 +394,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
       const bx = Math.floor(bushRng() * (CHUNK_W - 32));
       const by = bushRng() < 0.5 ? 96 : 224;
       const r: Rect = { x: bx, y: by, w: 32, h: 32 };
-      if (!groundFree(r, x0, seed, occupied)) continue;
+      if (!notUrbanAt(x0 + bx + 16) || !groundFree(r, x0, seed, occupied)) continue;
       occupied.push(r);
       pm.fillEllipse(r.x + 16, r.y + 29, 12, 3, C.grassDark);
       blit(pm, berryBushPixmap(keyRng(seed, "bushtile", k, i)), r.x, r.y);
@@ -381,7 +408,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
       const wy = tallRng() < 0.5 ? 128 : 256;
       const wide = tallRng() < 0.4 ? 2 : 1;
       const r: Rect = { x: tx * TILE, y: wy, w: TILE * wide, h: TILE };
-      if (!groundFree(r, x0, seed, occupied)) continue;
+      if (!notUrbanAt(x0 + r.x + r.w / 2) || !groundFree(r, x0, seed, occupied)) continue;
       occupied.push(r);
       for (let t = 0; t < wide; t++) {
         blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), r.x + t * TILE, r.y);
@@ -399,7 +426,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
         const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
         const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
         const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
-        if (!groundFree(r, x0, seed, occupied)) continue;
+        if (!notUrbanAt(x0 + fx + TILE / 2) || !groundFree(r, x0, seed, occupied)) continue;
         blit(pm, flowerTile(keyRng(seed, "flowertile", k, i, f)), r.x, r.y);
       }
     }
@@ -418,7 +445,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
           const fy = pb + 8;
           if (fy + TILE > VIEW_H) continue;
           const r: Rect = { x: lx, y: fy, w: TILE, h: TILE };
-          if (!groundFree(r, x0, seed, occupied)) continue;
+          if (!notUrbanAt(wx) || !groundFree(r, x0, seed, occupied)) continue;
           occupied.push(r);
           blit(pm, fencePixmap(keyRng(seed, "ft", k, s)), lx, fy);
         }
@@ -426,8 +453,10 @@ export function generateChunk(seed: string, k: number): Pixmap {
     }
   }
 
-  // path / road (smooth dirt↔road blend, wider in cities, fades in forest)
-  const pathSeed = hashString(seed + ":path");
+  // path / road: flat dirt or flat pavement base (a clean switch at the
+  // urban midpoint, like a real road-surface change at a town's edge,
+  // rather than a per-pixel dither across the whole range), fading into
+  // forest at the edges. Width still grows with urban for a wider street.
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
     const { urban, forest } = regionWeights(wx, seed);
@@ -436,26 +465,33 @@ export function generateChunk(seed: string, k: number): Pixmap {
     const half = 26 + urban * 10;
     const pt = center - Math.round(half);
     const pb = center + Math.round(half);
+    const paved = urban > 0.5;
     for (let y = pt; y <= pb; y++) {
       if (y < HORIZON || y >= VIEW_H) continue;
-      const n = noise2i(pathSeed, wx, y);
-      let c: number;
-      if (y === pt || y === pb) c = C.pathEdge;
-      else if (y === pt + 1 || y === pb - 1) c = C.pathLight;
-      else if (n < 0.06) c = C.pathDark;
-      else if (n > 0.94) c = C.pathLight;
-      else c = C.path;
-      if (urban > 0) {
-        let r: number;
-        if (y === pt || y === pb) r = C.roadDark;
-        else if (y === pt + 1 || y === pb - 1) r = C.roadLight;
-        else if (n < 0.06) r = C.roadDark;
-        else if (n > 0.94) r = C.roadLight;
-        else r = C.road;
-        c = ditherPick(r, c, urban, wx, y);
-      }
+      let c: number = paved ? C.road : C.path;
+      if (y === pt || y === pb) c = paved ? C.roadDark : C.pathEdge;
+      else if (y === pt + 1 || y === pb - 1) c = paved ? C.roadLight : C.pathLight;
       if (forest > 0) c = ditherPick(C.grassDark, c, forest * 1.1, wx, y);
       pm.set(lx, y, c);
+    }
+  }
+
+  // path/road texture: sparse authored pebble/seam ticks (tile-grid, like
+  // the grass ticks) instead of per-pixel noise thresholding.
+  for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
+    for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
+      const wx = x0 + tx * TILE + TILE / 2;
+      const { urban, forest } = regionWeights(wx, seed);
+      if (forest > 0.8) continue;
+      const center = Math.round(pathCenter(wx, seed));
+      const half = 26 + urban * 10;
+      const pt = center - Math.round(half);
+      const pb = center + Math.round(half);
+      const tileTop = ty * TILE;
+      const tileBottom = tileTop + TILE;
+      if (tileBottom <= pt + 3 || tileTop >= pb - 3) continue;
+      const tileRng = keyRng(seed, "pathtick", x0 + tx * TILE, ty);
+      blit(pm, pathTickTile(tileRng, urban > 0.5), tx * TILE, tileTop);
     }
   }
 

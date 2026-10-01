@@ -127,8 +127,8 @@ export function cloudPixmap(rng: RNG): Pixmap {
   return p;
 }
 
-/** A horizontal wooden rail fence segment. */
-export function fencePixmap(_rng: RNG): Pixmap {
+/** A horizontal wooden rail fence segment, with an occasional knot mark for variety. */
+export function fencePixmap(rng: RNG): Pixmap {
   const p = new Pixmap(32, 32);
   p.fillRect(4, 4, 6, 24, C.woodDark);
   p.fillRect(22, 4, 6, 24, C.woodDark);
@@ -138,6 +138,11 @@ export function fencePixmap(_rng: RNG): Pixmap {
   p.fillRect(0, 20, 32, 6, C.wood);
   p.fillRect(0, 8, 32, 2, C.woodDark);
   p.fillRect(0, 20, 32, 2, C.woodDark);
+  if (rng() < 0.5) {
+    const kx = 2 + Math.floor(rng() * 28);
+    const ky = rng() < 0.5 ? 10 : 22;
+    p.set(kx, ky, C.woodDark);
+  }
   return p;
 }
 
@@ -322,11 +327,12 @@ export function buildingPixmap(type = 0, rng?: RNG): Pixmap {
   return p;
 }
 
-/** A tall streetlamp with a glowing head. */
-export function streetlampPixmap(_rng: RNG): Pixmap {
+/** A tall streetlamp with a glowing head — warm or cool glow for variety. */
+export function streetlampPixmap(rng: RNG): Pixmap {
   const p = new Pixmap(24, 56);
+  const glow = rng() < 0.6 ? C.flowerYellow : C.houseWindow;
   p.fillRect(6, 8, 12, 9, C.woodDark);
-  p.fillRect(7, 9, 10, 7, C.flowerYellow);
+  p.fillRect(7, 9, 10, 7, glow);
   p.fillRect(8, 10, 8, 5, C.houseTrim);
   p.fillRect(4, 17, 16, 3, C.woodDark);
   p.fillRect(10, 20, 4, 33, C.woodDark);
@@ -335,8 +341,8 @@ export function streetlampPixmap(_rng: RNG): Pixmap {
   return p;
 }
 
-/** A wooden park bench. */
-export function benchPixmap(_rng: RNG): Pixmap {
+/** A wooden park bench, with an occasional worn plank mark for variety. */
+export function benchPixmap(rng: RNG): Pixmap {
   const p = new Pixmap(40, 20);
   p.fillRect(2, 2, 36, 2, C.wood);
   p.fillRect(2, 2, 36, 1, C.woodDark);
@@ -348,6 +354,10 @@ export function benchPixmap(_rng: RNG): Pixmap {
   p.fillRect(2, 10, 36, 1, C.woodDark);
   p.fillRect(6, 14, 4, 6, C.woodDark);
   p.fillRect(30, 14, 4, 6, C.woodDark);
+  if (rng() < 0.4) {
+    const kx = 4 + Math.floor(rng() * 32);
+    p.set(kx, 3, C.woodDark);
+  }
   return p;
 }
 
