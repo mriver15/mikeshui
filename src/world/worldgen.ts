@@ -183,19 +183,17 @@ export function generateChunk(seed: string, k: number): Pixmap {
     }
   }
 
-  // ground: flat per-region base color with broad (coarse-grained, not
-  // per-pixel) tone blending, so open fields read as a material rather than
-  // static. `forest` never fully saturates to a single flat index — it
-  // dithers toward a dark-but-still-varied floor, preserving texture even in
-  // dense woods (previously a worldgen bug: solid-color dead patches).
+  // ground: flat per-region base color. (Previously dithered a continuous
+  // per-pixel "tone" noise between grassLight/grass/grassDark — at this
+  // view scale ordered dithering reads as a blotchy checker pattern rather
+  // than a gradient, and it's not how GBA tile art varies open ground
+  // anyway: real tilesets use flat fields with a few distinct hand-placed
+  // patches, not a continuous blend. See the patch pass below instead.)
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
     const { urban, forest } = regionWeights(wx, seed);
-    const tone = fbm1D(wx / 1800, seed + ":tone", 2);
     for (let y = HORIZON; y < VIEW_H; y++) {
       let c = C.grass;
-      if (tone > 0.62) c = ditherPick(C.grassLight, c, (tone - 0.62) * 1.8, wx >> 2, y >> 2);
-      else if (tone < 0.38) c = ditherPick(C.grassDark, c, (0.38 - tone) * 1.8, wx >> 2, y >> 2);
       if (forest > 0) {
         const n = noise2i(grassSeed, wx >> 2, y >> 2);
         const floor = n > 0.85 ? C.grass : C.grassDark;
@@ -211,6 +209,26 @@ export function generateChunk(seed: string, k: number): Pixmap {
         if (pn < 0.04) c = C.roadDark;
       }
       pm.set(lx, y, c);
+    }
+  }
+
+  // tonal patches: one or two flat-colored, clean-edged clearings per
+  // chunk (a sunnier or shadier patch of ground) instead of a continuous
+  // dithered gradient — closer to how tile art actually varies open
+  // ground, and reads as a deliberate feature rather than noise. Skipped
+  // in the city itself, where ground is paving, not grass.
+  if (region !== REGION_CITY) {
+    const patchRng = keyRng(seed, "patch", k);
+    const nPatches = 1 + Math.floor(patchRng() * 2);
+    for (let i = 0; i < nPatches; i++) {
+      const px = Math.floor(patchRng() * CHUNK_W);
+      const py = HORIZON + 12 + Math.floor(patchRng() * (VIEW_H - HORIZON - 24));
+      const { urban } = regionWeights(x0 + px, seed);
+      if (urban > 0.3) continue;
+      const rx = 36 + patchRng() * 44;
+      const ry = rx * (0.4 + patchRng() * 0.2);
+      const col = patchRng() < 0.5 ? C.grassLight : C.grassDark;
+      pm.fillEllipse(px, py, rx, ry, col);
     }
   }
 
