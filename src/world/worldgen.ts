@@ -29,6 +29,22 @@ export const LAKE_TOP = 276;
 const TRAINER_W = 32;
 const TRAINER_H = 60;
 
+// Decoration placement bands: two rough vertical "shelves" below the
+// horizon — one nearer the treeline, one nearer the lake shore — where
+// foliage decorations cluster. Each decoration type sits at its own y
+// within a shelf rather than sharing one exact value, so trees, tall
+// grass, flowers, and bushes don't all stack at the same height; that
+// stagger is intentional, not arbitrary, hence naming each one here
+// instead of collapsing them to two shared constants.
+const BAND_UPLAND_TREE = 96;
+const BAND_LOWLAND_TREE = 256;
+const BAND_UPLAND_TALLGRASS = 128;
+const BAND_LOWLAND_TALLGRASS = 256;
+const BAND_UPLAND_FLOWER = 144;
+const BAND_LOWLAND_FLOWER = 240;
+const BAND_UPLAND_BUSH = 96;
+const BAND_LOWLAND_BUSH = 224;
+
 // --- regions ---
 const REGION_ROUTE = 0;
 const REGION_FOREST = 1;
@@ -346,10 +362,10 @@ export function generateChunk(seed: string, k: number): Pixmap {
     // treeline doesn't read as a ruled-off row of identical stamps)
     const treeRng = keyRng(seed, "trees", k);
     for (const band of [
-      { y: 96, jitter: 16 },
-      { y: 256, jitter: 16 },
+      { y: BAND_UPLAND_TREE, jitter: 16 },
+      { y: BAND_LOWLAND_TREE, jitter: 16 },
     ]) {
-      const prob = band.y === 96 ? (region === REGION_FOREST ? 0.55 : 0.3) : (region === REGION_FOREST ? 0.4 : 0.22);
+      const prob = band.y === BAND_UPLAND_TREE ? (region === REGION_FOREST ? 0.55 : 0.3) : (region === REGION_FOREST ? 0.4 : 0.22);
       let tx = 0;
       while (tx <= CHUNK_TILES - 2) {
         const step = 1 + Math.floor(treeRng() * 3);
@@ -379,7 +395,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
     const berryRng = keyRng(seed, "berry", k);
     if (berryRng() < 0.3) {
       const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
-      const r: Rect = { x: bx, y: 96, w: TREE_W, h: TREE_H };
+      const r: Rect = { x: bx, y: BAND_UPLAND_TREE, w: TREE_W, h: TREE_H };
       if (notUrbanAt(x0 + bx + TREE_W / 2) && groundFree(r, x0, seed, occupied)) {
         occupied.push(r);
         pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
@@ -392,7 +408,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
     const bushes = 2 + Math.floor(bushRng() * 3);
     for (let i = 0; i < bushes; i++) {
       const bx = Math.floor(bushRng() * (CHUNK_W - 32));
-      const by = bushRng() < 0.5 ? 96 : 224;
+      const by = bushRng() < 0.5 ? BAND_UPLAND_BUSH : BAND_LOWLAND_BUSH;
       const r: Rect = { x: bx, y: by, w: 32, h: 32 };
       if (!notUrbanAt(x0 + bx + 16) || !groundFree(r, x0, seed, occupied)) continue;
       occupied.push(r);
@@ -405,7 +421,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
     const patches = 2 + Math.floor(tallRng() * 3);
     for (let i = 0; i < patches; i++) {
       const tx = Math.floor(tallRng() * (CHUNK_TILES - 2));
-      const wy = tallRng() < 0.5 ? 128 : 256;
+      const wy = tallRng() < 0.5 ? BAND_UPLAND_TALLGRASS : BAND_LOWLAND_TALLGRASS;
       const wide = tallRng() < 0.4 ? 2 : 1;
       const r: Rect = { x: tx * TILE, y: wy, w: TILE * wide, h: TILE };
       if (!notUrbanAt(x0 + r.x + r.w / 2) || !groundFree(r, x0, seed, occupied)) continue;
@@ -420,7 +436,7 @@ export function generateChunk(seed: string, k: number): Pixmap {
     const clusters = 2 + Math.floor(flowerRng() * 3);
     for (let i = 0; i < clusters; i++) {
       const cx = Math.floor(flowerRng() * CHUNK_W);
-      const cy = flowerRng() < 0.5 ? 144 : 240;
+      const cy = flowerRng() < 0.5 ? BAND_UPLAND_FLOWER : BAND_LOWLAND_FLOWER;
       const n = 2 + Math.floor(flowerRng() * 3);
       for (let f = 0; f < n; f++) {
         const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
