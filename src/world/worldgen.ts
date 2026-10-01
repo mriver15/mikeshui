@@ -71,8 +71,18 @@ function pathBand(x: number, seed: string, region: number): [number, number] {
   return [c - half, c + half];
 }
 
+/**
+ * Continuous lake presence in [0,1]: 0 = dry land, 1 = open lake. A smooth
+ * ramp (not a hard threshold) so shorelines taper in as the lake begins and
+ * out as it ends, instead of the water block snapping on/off at a sharp
+ * vertical edge.
+ */
+function lakeDepth(x: number, seed: string): number {
+  return smoothstep(0.58, 0.74, fbm1D(x / 520, seed + ":lake", 2));
+}
+
 function inLake(x: number, seed: string): boolean {
-  return fbm1D(x / 520, seed + ":lake", 2) > 0.6;
+  return lakeDepth(x, seed) > 0.15;
 }
 
 /** Whether a horizontal span [x0, x0+w) crosses any lake water (non-city). */
@@ -88,9 +98,16 @@ export function isWaterAt(x: number, seed: string): boolean {
   return regionAt(x, seed) !== REGION_CITY && inLake(x, seed);
 }
 
-/** Lake surface y for a world-x column. */
-export function waterSurfaceY(x: number): number {
-  return Math.round(LAKE_TOP + Math.sin(x * 0.06) * 4);
+/**
+ * Lake surface y for a world-x column. Tapers toward the bottom of the
+ * screen (vanishingly thin water) as the shore approaches, matching the
+ * `lakeDepth` ramp used to fill it, so start/end edges blend rather than
+ * cutting off as a flat-walled block.
+ */
+export function waterSurfaceY(x: number, seed: string): number {
+  const depth = lakeDepth(x, seed);
+  const base = LAKE_TOP + Math.sin(x * 0.06) * 4;
+  return Math.round(base + (1 - depth) * (VIEW_H - base));
 }
 
 interface Rect {
@@ -217,16 +234,25 @@ export function generateChunk(seed: string, k: number): Pixmap {
     for (let lx = 0; lx < CHUNK_W; lx++) {
       const wx = x0 + lx;
       if (regionAt(wx, seed) === REGION_CITY) continue;
-      if (!inLake(wx, seed)) continue;
-      const surf = Math.round(LAKE_TOP + Math.sin(wx * 0.06) * 4);
+      const depth = lakeDepth(wx, seed);
+      if (depth <= 0.02) continue;
+      const surf = waterSurfaceY(wx, seed);
+      if (surf >= VIEW_H) continue;
+      // fade the shoreline in/out over the last stretch of taper (rather
+      // than a hard edge) by dithering water against the grass already
+      // painted there
+      const edge = smoothstep(0.02, 0.35, depth);
       for (let y = surf; y < VIEW_H; y++) {
         const n = noise2i(waterSeed, wx, y);
-        pm.set(lx, y, n < 0.05 ? C.waterDark : C.water);
+        const wc = n < 0.05 ? C.waterDark : C.water;
+        pm.set(lx, y, edge < 1 ? ditherPick(wc, pm.get(lx, y), 1 - edge, wx, y) : wc);
       }
-      pm.set(lx, surf, C.shore);
-      pm.set(lx, surf + 1, C.shore);
-      pm.set(lx, surf + 2, C.pathDark);
-      pm.set(lx, surf + 3, C.waterBright);
+      if (edge > 0.5) {
+        pm.set(lx, surf, C.shore);
+        pm.set(lx, surf + 1, C.shore);
+        pm.set(lx, surf + 2, C.pathDark);
+        pm.set(lx, surf + 3, C.waterBright);
+      }
     }
   }
 

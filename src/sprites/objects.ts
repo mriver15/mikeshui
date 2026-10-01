@@ -44,6 +44,19 @@ const TREE_LAYOUTS: number[][][] = [
 ];
 
 /**
+ * A short trunk tucked under the canopy. Takes the lowest point of the
+ * canopy puffs so it always reaches up far enough to overlap them — a fixed
+ * trunk position left visible gaps under the taller/narrower layouts.
+ */
+function drawTrunk(p: Pixmap, lowestCanopyBottom: number): void {
+  const top = Math.min(44, Math.round(lowestCanopyBottom - 5));
+  const bottom = 62;
+  p.fillRect(28, top, 8, bottom - top, C.black);
+  p.fillRect(30, top, 4, bottom - top - 2, C.trunk);
+  p.set(30, top, C.trunkDark);
+}
+
+/**
  * Gen-3 style tree: a cluster of overlapping foliage puffs over a short
  * trunk. `variant` picks a different lobe layout for silhouette variety.
  */
@@ -51,19 +64,21 @@ export function treePixmap(variant = 0): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
   const layout = TREE_LAYOUTS[variant % TREE_LAYOUTS.length];
   for (const [cx, cy, r] of layout) puff(p, cx, cy, r);
-  p.fillRect(28, 44, 8, 18, C.black);
-  p.fillRect(30, 44, 4, 16, C.trunk);
-  p.set(30, 44, C.trunkDark);
+  const lowestBottom = Math.max(...layout.map(([, cy, r]) => cy + r));
+  drawTrunk(p, lowestBottom);
   return p;
 }
 
 /** A small tree bearing red berries, built from the same puff clusters as treePixmap. */
 export function berryTreePixmap(): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
-  puff(p, 22, 25, 11);
-  puff(p, 34, 20, 12);
-  puff(p, 44, 26, 10);
-  puff(p, 28, 33, 12);
+  const puffs: Array<[number, number, number]> = [
+    [22, 25, 11],
+    [34, 20, 12],
+    [44, 26, 10],
+    [28, 33, 12],
+  ];
+  for (const [cx, cy, r] of puffs) puff(p, cx, cy, r);
   const spots: Array<[number, number]> = [
     [20, 20], [32, 16], [44, 21], [24, 28], [40, 28], [30, 34], [18, 26], [46, 26],
   ];
@@ -72,8 +87,8 @@ export function berryTreePixmap(): Pixmap {
     p.set(bx - 1, by, C.berry);
     p.set(bx, by - 1, C.berry);
   }
-  p.fillRect(28, 44, 8, 18, C.black);
-  p.fillRect(30, 44, 4, 16, C.trunk);
+  const lowestBottom = Math.max(...puffs.map(([, cy, r]) => cy + r));
+  drawTrunk(p, lowestBottom);
   return p;
 }
 

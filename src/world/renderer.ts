@@ -97,7 +97,7 @@ export class Renderer {
     for (let x = 0; x < fb.w; x++) {
       const wx = scrollX + x;
       if (!isWaterAt(wx, this.seed)) continue;
-      const surf = waterSurfaceY(wx);
+      const surf = waterSurfaceY(wx, this.seed);
       for (let y = surf + 4; y < VIEW_H; y++) {
         const n = noise2i(shimmerSeed, wx + drift, y);
         if (n < 0.05) fb.data[y * fb.w + x] = C.waterBright;

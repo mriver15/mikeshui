@@ -1,18 +1,33 @@
 import * as THREE from "three";
-import { mulberry32, hashString } from "../core/prng";
+import { mulberry32, hashString, type RNG } from "../core/prng";
 import { VIEW_H } from "../world/worldgen";
 
+function lerp(range: [number, number], t: number): number {
+  return range[0] + (range[1] - range[0]) * t;
+}
+
+interface CloudLayer {
+  count: number;
+  scaleRange: [number, number];
+  /** Distance from the top of the view (not the bottom) — smaller is higher/further away. */
+  topRange: [number, number];
+  speedRange: [number, number];
+  opacityRange: [number, number];
+  tint: number;
+  z: number;
+}
+
 /**
- * Three.js overlay: dynamic sky (drifting clouds + sun) and swaying foreground
- * grass, composited over the pixel-art world canvas. The camera uses the same
- * logical height (VIEW_H) as the 2D renderer, with +Y up (y = VIEW_H - logicalY).
+ * Three.js overlay: drifting clouds (two depth layers for a sense of
+ * distance) and swaying foreground grass, composited over the pixel-art
+ * world canvas. The camera uses the same logical height (VIEW_H) as the 2D
+ * renderer, with +Y up (y = VIEW_H - logicalY).
  */
 export class SkyDynamics {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.OrthographicCamera;
   private clouds: Array<{ sprite: THREE.Sprite; speed: number }> = [];
-  private sun: THREE.Sprite;
   private grass: THREE.InstancedMesh;
   private grassCount: number;
   private grassX: Float32Array;
@@ -35,33 +50,35 @@ export class SkyDynamics {
     this.camera.position.z = 1;
 
     const rng = mulberry32(hashString(seed + ":sky"));
+    const cloudRng = mulberry32(hashString(seed + ":clouds"));
 
-    // clouds
-    const cloudTex = makeCloudTexture();
-    for (let i = 0; i < 9; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: cloudTex,
-        transparent: true,
-        depthWrite: false,
-        opacity: 0.85,
-      });
-      const sprite = new THREE.Sprite(mat);
-      const w = 70 + rng() * 80;
-      sprite.scale.set(w, w * 0.42, 1);
-      sprite.position.set(rng() * this.logicalW, VIEW_H - (20 + rng() * 62), -2);
-      const speed = 2 + rng() * 7;
-      sprite.userData.speed = speed;
-      this.scene.add(sprite);
-      this.clouds.push({ sprite, speed });
+    // clouds: a hazy, slow, grayish-blue far layer and a brighter, faster
+    // near layer, each cloud its own noise-shaped blob cluster (not one
+    // texture rescaled) so no two look alike.
+    const layers: CloudLayer[] = [
+      { count: 7, scaleRange: [30, 52], topRange: [10, 70], speedRange: [0.6, 1.8], opacityRange: [0.35, 0.55], tint: 0xc3cfe0, z: -5 },
+      { count: 5, scaleRange: [58, 96], topRange: [70, 150], speedRange: [2, 5], opacityRange: [0.7, 0.92], tint: 0xfdfdfa, z: -3 },
+    ];
+    for (const layer of layers) {
+      for (let i = 0; i < layer.count; i++) {
+        const tex = makeCloudTexture(cloudRng);
+        const shadeJitter = 0.88 + cloudRng() * 0.24;
+        const mat = new THREE.SpriteMaterial({
+          map: tex,
+          transparent: true,
+          depthWrite: false,
+          opacity: lerp(layer.opacityRange, cloudRng()),
+          color: new THREE.Color(layer.tint).multiplyScalar(shadeJitter),
+        });
+        const sprite = new THREE.Sprite(mat);
+        const w = lerp(layer.scaleRange, cloudRng());
+        sprite.scale.set(w, w * 0.42, 1);
+        sprite.position.set(cloudRng() * this.logicalW, VIEW_H - lerp(layer.topRange, cloudRng()), layer.z);
+        const speed = lerp(layer.speedRange, cloudRng());
+        this.scene.add(sprite);
+        this.clouds.push({ sprite, speed });
+      }
     }
-
-    // sun
-    this.sun = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: makeSunTexture(), transparent: true, depthWrite: false }),
-    );
-    this.sun.scale.set(120, 120, 1);
-    this.sun.position.set(this.logicalW * 0.72, VIEW_H - 30, -3);
-    this.scene.add(this.sun);
 
     // swaying grass blades
     this.grassCount = 150;
@@ -118,39 +135,43 @@ export class SkyDynamics {
   }
 }
 
-function makeCloudTexture(): THREE.Texture {
+/**
+ * A single cloud's silhouette: a noise-varied chain of 5-8 overlapping
+ * blobs (count, size, and spacing all drawn from `rng`) with a soft gray
+ * undershadow drawn first, so each cloud is its own shape rather than a
+ * shared texture stretched to different sizes.
+ */
+function makeCloudTexture(rng: RNG): THREE.Texture {
   const c = document.createElement("canvas");
-  c.width = 128;
-  c.height = 64;
+  c.width = 160;
+  c.height = 72;
   const ctx = c.getContext("2d")!;
-  ctx.fillStyle = "rgba(255,255,255,0.92)";
-  const blobs: Array<[number, number, number]> = [
-    [40, 40, 18],
-    [64, 33, 22],
-    [90, 40, 18],
-    [64, 45, 20],
-  ];
-  for (const [x, y, r] of blobs) {
+
+  const n = 5 + Math.floor(rng() * 4);
+  const midY = 36;
+  const blobs: Array<[number, number, number]> = [];
+  let x = 16 + rng() * 14;
+  for (let i = 0; i < n; i++) {
+    const r = 10 + rng() * 13;
+    const y = midY + (rng() - 0.5) * 10 - r * 0.12;
+    blobs.push([x, y, r]);
+    x += r * (0.7 + rng() * 0.55);
+    if (x > 148) break;
+  }
+
+  ctx.fillStyle = "rgba(150,162,182,0.5)";
+  for (const [bx, by, r] of blobs) {
     ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.arc(bx, by + r * 0.32, r * 0.92, 0, Math.PI * 2);
     ctx.fill();
   }
-  const tex = new THREE.CanvasTexture(c);
-  tex.minFilter = THREE.LinearFilter;
-  return tex;
-}
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  for (const [bx, by, r] of blobs) {
+    ctx.beginPath();
+    ctx.arc(bx, by, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
-function makeSunTexture(): THREE.Texture {
-  const c = document.createElement("canvas");
-  c.width = 64;
-  c.height = 64;
-  const ctx = c.getContext("2d")!;
-  const g = ctx.createRadialGradient(32, 32, 4, 32, 32, 30);
-  g.addColorStop(0, "rgba(255,250,220,1)");
-  g.addColorStop(0.35, "rgba(255,242,190,0.85)");
-  g.addColorStop(1, "rgba(255,242,190,0)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
   const tex = new THREE.CanvasTexture(c);
   tex.minFilter = THREE.LinearFilter;
   return tex;
