@@ -61,6 +61,25 @@ describe("generateChunk", () => {
       }
     }
   });
+
+  it("tree/berry-tree spots fall within the chunk's own x-span with a valid variant", () => {
+    for (const seed of ["1790824785082", "42", "hello world"]) {
+      for (const k of [-3, 0, 1, 7]) {
+        const { trees, berryTrees } = generateChunk(seed, k);
+        for (const spot of trees) {
+          expect(spot.x).toBeGreaterThanOrEqual(k * CHUNK_W);
+          expect(spot.x).toBeLessThan((k + 1) * CHUNK_W);
+          expect(spot.variant).toBeGreaterThanOrEqual(0);
+          expect(spot.variant).toBeLessThan(3);
+          expect(spot.scale).toBeGreaterThan(0);
+        }
+        for (const spot of berryTrees) {
+          expect(spot.x).toBeGreaterThanOrEqual(k * CHUNK_W);
+          expect(spot.x).toBeLessThan((k + 1) * CHUNK_W);
+        }
+      }
+    }
+  });
 });
 
 describe("generateChunk golden hash (refactor-safety net)", () => {
@@ -97,14 +116,14 @@ describe("generateForeground", () => {
         expect(() => generateForeground(seed, k)).not.toThrow();
       }
     }
-    const pm = generateForeground("1790824785082", 0);
-    expect(pm.w).toBe(CHUNK_W);
-    expect(pm.h).toBe(VIEW_H);
+    const { pixmap } = generateForeground("1790824785082", 0);
+    expect(pixmap.w).toBe(CHUNK_W);
+    expect(pixmap.h).toBe(VIEW_H);
   });
 
   it("is deterministic", () => {
     const a = generateForeground("1790824785082", 2);
     const b = generateForeground("1790824785082", 2);
-    expect(a.data).toEqual(b.data);
+    expect(a.pixmap.data).toEqual(b.pixmap.data);
   });
 });

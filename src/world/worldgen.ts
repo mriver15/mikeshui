@@ -221,9 +221,25 @@ export interface TallGrassSpot {
   t: number;
 }
 
+/** A placed tree, in world-space, with what's needed to redraw it swaying. */
+export interface TreeSpot {
+  x: number;
+  y: number;
+  scale: number;
+  variant: number;
+}
+
+/** A placed berry tree (fixed look, no variant) — just a position. */
+export interface BerryTreeSpot {
+  x: number;
+  y: number;
+}
+
 export interface ChunkResult {
   pixmap: Pixmap;
   tallGrass: TallGrassSpot[];
+  trees: TreeSpot[];
+  berryTrees: BerryTreeSpot[];
 }
 
 function overlaps(a: Rect, b: Rect): boolean {
@@ -408,6 +424,8 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   // objects (region-dependent)
   const occupied: Rect[] = [];
   const tallGrass: TallGrassSpot[] = [];
+  const trees: TreeSpot[] = [];
+  const berryTrees: BerryTreeSpot[] = [];
   let trainerRect: Rect | null = null;
   let trainerVariant = 0;
 
@@ -478,8 +496,10 @@ export function generateChunk(seed: string, k: number): ChunkResult {
           };
           if (notUrbanAt(x0 + r.x + w / 2) && groundFree(r, x0, seed, occupied)) {
             occupied.push(r);
+            const variant = Math.floor(treeRng() * 3);
             pm.fillEllipse(r.x + w / 2, r.y + h - 3, 20 * scale, 4, C.grassDark);
-            blitScaled(pm, treePixmap(Math.floor(treeRng() * 3)), r.x, r.y, scale);
+            blitScaled(pm, treePixmap(variant), r.x, r.y, scale);
+            trees.push({ x: x0 + r.x, y: r.y, scale, variant });
           }
         }
         tx += step;
@@ -496,6 +516,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
           occupied.push(r);
           pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
           blit(pm, berryTreePixmap(), r.x, r.y);
+          berryTrees.push({ x: x0 + r.x, y: r.y });
         }
       }
     }
@@ -661,7 +682,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
-  return { pixmap: pm, tallGrass };
+  return { pixmap: pm, tallGrass, trees, berryTrees };
 }
 
 /**
@@ -669,8 +690,14 @@ export function generateChunk(seed: string, k: number): ChunkResult {
  * rendered transparent elsewhere. Scrolled faster than the background by the
  * renderer for depth.
  */
-export function generateForeground(seed: string, k: number): Pixmap {
+export interface ForegroundResult {
+  pixmap: Pixmap;
+  trees: TreeSpot[];
+}
+
+export function generateForeground(seed: string, k: number): ForegroundResult {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
+  const trees: TreeSpot[] = [];
   const rng = keyRng(seed, "fg", k);
   const nTrees = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < nTrees; i++) {
@@ -680,8 +707,10 @@ export function generateForeground(seed: string, k: number): Pixmap {
     const tx = Math.floor(rng() * (CHUNK_W - w));
     if (overWater(k * CHUNK_W + tx, w, seed)) continue;
     const ty = VIEW_H - h + 8;
+    const variant = Math.floor(rng() * 3);
     pm.fillEllipse(tx + w / 2, VIEW_H - 7, w * 0.3, 5, C.grassDark);
-    blitScaled(pm, treePixmap(Math.floor(rng() * 3)), tx, ty, scale);
+    blitScaled(pm, treePixmap(variant), tx, ty, scale);
+    trees.push({ x: k * CHUNK_W + tx, y: ty, scale, variant });
   }
   if (rng() < 0.7) {
     const scale = 1.6 + rng() * 0.5;
@@ -692,5 +721,5 @@ export function generateForeground(seed: string, k: number): Pixmap {
       blitScaled(pm, berryBushPixmap(keyRng(seed, "fgb", k)), tx, VIEW_H - Math.round(32 * scale), scale);
     }
   }
-  return pm;
+  return { pixmap: pm, trees };
 }

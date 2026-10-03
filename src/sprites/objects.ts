@@ -14,7 +14,8 @@ export const TREE_H = 64;
  * the silhouette and shading technique right; colors are this project's own
  * (pokeruby-disassembly-derived) palette, already a near-exact match.
  */
-function puff(p: Pixmap, cx: number, cy: number, r: number): void {
+function puff(p: Pixmap, cx: number, cy: number, r: number, swayX = 0): void {
+  cx += swayX;
   p.fillCircle(cx, cy, r, C.black);
   p.fillCircle(cx, cy, r - 1.2, C.treeDark);
   p.fillCircle(cx - 0.5, cy - 0.5, r - 2.6, C.tree);
@@ -43,6 +44,14 @@ const TREE_LAYOUTS: number[][][] = [
   ],
 ];
 
+/** How many canopy lobes `treePixmap(variant)` has — the length a caller's `sway` array should be. */
+export function treeLobeCount(variant = 0): number {
+  return TREE_LAYOUTS[variant % TREE_LAYOUTS.length].length;
+}
+
+/** How many canopy lobes `berryTreePixmap` has. */
+export const BERRY_TREE_LOBE_COUNT = 4;
+
 /**
  * A short trunk tucked under the canopy. Takes the lowest point of the
  * canopy puffs so it always reaches up far enough to overlap them — a fixed
@@ -59,18 +68,22 @@ function drawTrunk(p: Pixmap, lowestCanopyBottom: number): void {
 /**
  * Gen-3 style tree: a cluster of overlapping foliage puffs over a short
  * trunk. `variant` picks a different lobe layout for silhouette variety.
+ * `sway`, if given, is one x-offset per lobe (same order as the layout) —
+ * animating the canopy is each ball nudging independently, not the whole
+ * tree shifting as one rigid block. Defaults to no sway, so the baked
+ * rest-pose is pixel-identical to calling this with no sway at all.
  */
-export function treePixmap(variant = 0): Pixmap {
+export function treePixmap(variant = 0, sway?: number[]): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
   const layout = TREE_LAYOUTS[variant % TREE_LAYOUTS.length];
-  for (const [cx, cy, r] of layout) puff(p, cx, cy, r);
+  layout.forEach(([cx, cy, r], idx) => puff(p, cx, cy, r, sway?.[idx] ?? 0));
   const lowestBottom = Math.max(...layout.map(([, cy, r]) => cy + r));
   drawTrunk(p, lowestBottom);
   return p;
 }
 
 /** A small tree bearing red berries, built from the same puff clusters as treePixmap. */
-export function berryTreePixmap(): Pixmap {
+export function berryTreePixmap(sway?: number[]): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
   const puffs: Array<[number, number, number]> = [
     [22, 25, 11],
@@ -78,7 +91,7 @@ export function berryTreePixmap(): Pixmap {
     [44, 26, 10],
     [28, 33, 12],
   ];
-  for (const [cx, cy, r] of puffs) puff(p, cx, cy, r);
+  puffs.forEach(([cx, cy, r], idx) => puff(p, cx, cy, r, sway?.[idx] ?? 0));
   const spots: Array<[number, number]> = [
     [20, 20], [32, 16], [44, 21], [24, 28], [40, 28], [30, 34], [18, 26], [46, 26],
   ];

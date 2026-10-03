@@ -1,8 +1,9 @@
-import { Pixmap, blit } from "../core/pixmap";
+import { Pixmap, blit, blitScaled } from "../core/pixmap";
 import { SKY, RGBA32, C } from "../core/palette";
 import { ditherPick } from "../core/dither";
 import { noise2i, hashString, keyRng } from "../core/prng";
 import { tallGrassTile, TILE } from "../sprites/tiles";
+import { treePixmap, berryTreePixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
   generateChunk,
   generateForeground,
@@ -12,7 +13,20 @@ import {
   VIEW_H,
   HORIZON,
   type ChunkResult,
+  type ForegroundResult,
 } from "./worldgen";
+
+/**
+ * Per-lobe canopy sway for a tree at world-x `wx`: each lobe gets its own
+ * phase (`idx * 1.3`, spread across a typical 7-8 lobe canopy) so the balls
+ * nudge independently — wind rustling the canopy, not the whole tree
+ * sliding as one rigid block. `wx` in the base phase keeps neighboring
+ * trees out of lockstep with each other too.
+ */
+function treeSway(wx: number, time: number, lobeCount: number): number[] {
+  const base = time / 1300 + wx * 0.03;
+  return Array.from({ length: lobeCount }, (_, idx) => Math.sin(base + idx * 1.3) * 1.8);
+}
 
 const MAX_CACHED_CHUNKS = 512;
 const PARALLAX = 1.5;
@@ -23,7 +37,7 @@ const PARALLAX = 1.5;
  */
 export class Renderer {
   private chunks = new Map<number, ChunkResult>();
-  private fgChunks = new Map<number, Pixmap>();
+  private fgChunks = new Map<number, ForegroundResult>();
   private fb = new Pixmap(1, VIEW_H);
   private off: HTMLCanvasElement;
   private offctx: CanvasRenderingContext2D;
@@ -83,12 +97,14 @@ export class Renderer {
     const fgFirst = Math.floor(fgScroll / CHUNK_W);
     const fgLast = Math.floor((fgScroll + fb.w - 1) / CHUNK_W);
     for (let k = fgFirst; k <= fgLast; k++) {
-      blit(fb, this.getFgChunk(k), k * CHUNK_W - fgScroll, 0);
+      blit(fb, this.getFgChunk(k).pixmap, k * CHUNK_W - fgScroll, 0);
     }
 
-    // animated water shimmer and tall-grass sway
+    // animated water shimmer, tall-grass sway, and tree-canopy sway
     this.shimmer(scrollX, time);
-    this.sway(first, last, scrollX, time);
+    this.swayGrass(first, last, scrollX, time);
+    this.swayTrees(first, last, scrollX, time);
+    this.swayForegroundTrees(fgFirst, fgLast, fgScroll, time);
 
     this.present();
   }
@@ -119,20 +135,55 @@ export class Renderer {
    * "static raster + small per-frame overdraw" pattern as `shimmer`,
    * applied to real grass sprites instead of a disconnected overlay mesh.
    */
-  private sway(first: number, last: number, scrollX: number, time: number): void {
+  private swayGrass(first: number, last: number, scrollX: number, time: number): void {
     const fb = this.fb;
     for (let k = first; k <= last; k++) {
       for (const spot of this.getChunk(k).tallGrass) {
         const screenX = spot.x - scrollX;
         if (screenX < -TILE || screenX >= fb.w) continue;
-        const lean = Math.sin(time / 900 + spot.x * 0.05) * 1.6;
+        const lean = Math.sin(time / 900 + spot.x * 0.05) * 2.4;
         const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
         blit(fb, tallGrassTile(rng, lean), screenX, spot.y);
       }
     }
   }
 
-  private getFgChunk(k: number): Pixmap {
+  /** Same overdraw pattern as `swayGrass`, for background trees and berry trees. */
+  private swayTrees(first: number, last: number, scrollX: number, time: number): void {
+    const fb = this.fb;
+    for (let k = first; k <= last; k++) {
+      const chunk = this.getChunk(k);
+      for (const spot of chunk.trees) {
+        const screenX = spot.x - scrollX;
+        const w = Math.round(TREE_W * spot.scale);
+        if (screenX < -w || screenX >= fb.w) continue;
+        const sway = treeSway(spot.x, time, treeLobeCount(spot.variant));
+        blitScaled(fb, treePixmap(spot.variant, sway), screenX, spot.y, spot.scale);
+      }
+      for (const spot of chunk.berryTrees) {
+        const screenX = spot.x - scrollX;
+        if (screenX < -TREE_W || screenX >= fb.w) continue;
+        const sway = treeSway(spot.x, time, BERRY_TREE_LOBE_COUNT);
+        blit(fb, berryTreePixmap(sway), screenX, spot.y);
+      }
+    }
+  }
+
+  /** Same as `swayTrees`, for the faster-scrolling foreground parallax trees. */
+  private swayForegroundTrees(first: number, last: number, scrollX: number, time: number): void {
+    const fb = this.fb;
+    for (let k = first; k <= last; k++) {
+      for (const spot of this.getFgChunk(k).trees) {
+        const screenX = spot.x - scrollX;
+        const w = Math.round(TREE_W * spot.scale);
+        if (screenX < -w || screenX >= fb.w) continue;
+        const sway = treeSway(spot.x, time, treeLobeCount(spot.variant));
+        blitScaled(fb, treePixmap(spot.variant, sway), screenX, spot.y, spot.scale);
+      }
+    }
+  }
+
+  private getFgChunk(k: number): ForegroundResult {
     let c = this.fgChunks.get(k);
     if (!c) {
       c = generateForeground(this.seed, k);
