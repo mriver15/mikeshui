@@ -2,7 +2,7 @@ import { Pixmap, blit, blitScaled } from "../core/pixmap";
 import { C } from "../core/palette";
 import { keyRng, noise2i, hashString } from "../core/prng";
 import { ditherPick, smoothstep } from "../core/dither";
-import { fbm1D } from "../core/perlin";
+import { fbm1D, valueNoise2D } from "../core/perlin";
 import { tallGrassTile, flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
 import {
   treePixmap,
@@ -32,21 +32,8 @@ export const LAKE_TOP = 276;
 const TRAINER_W = 32;
 const TRAINER_H = 60;
 
-// Decoration placement bands: two rough vertical "shelves" below the
-// horizon — one nearer the treeline, one nearer the lake shore — where
-// foliage decorations cluster. Each decoration type sits at its own y
-// within a shelf rather than sharing one exact value, so trees, tall
-// grass, flowers, and bushes don't all stack at the same height; that
-// stagger is intentional, not arbitrary, hence naming each one here
-// instead of collapsing them to two shared constants.
-const BAND_UPLAND_TREE = 96;
-const BAND_LOWLAND_TREE = 256;
-const BAND_UPLAND_TALLGRASS = 128;
-const BAND_LOWLAND_TALLGRASS = 256;
-const BAND_UPLAND_FLOWER = 144;
-const BAND_LOWLAND_FLOWER = 240;
-const BAND_UPLAND_BUSH = 96;
-const BAND_LOWLAND_BUSH = 224;
+/** Tree placement attempts per chunk; how many survive is set by region density and groves. */
+const TREE_CANDIDATES = 44;
 
 // --- regions ---
 const REGION_ROUTE = 0;
@@ -222,6 +209,8 @@ export interface TallGrassSpot {
   k: number;
   i: number;
   t: number;
+  /** Draw-order depth in the chunk's depth buffer (see `ChunkResult.depth`). */
+  depth: number;
 }
 
 /** A placed tree, in world-space, with what's needed to redraw it swaying. */
@@ -230,45 +219,124 @@ export interface TreeSpot {
   y: number;
   scale: number;
   spec: TreeSpec;
+  /** Draw-order depth in the chunk's depth buffer (see `ChunkResult.depth`). */
+  depth: number;
 }
 
-/** A placed berry tree (fixed look, no variant) — just a position. */
+/** A placed berry tree (fixed look) — a position and its draw-order depth. */
 export interface BerryTreeSpot {
   x: number;
   y: number;
+  depth: number;
 }
 
 export interface ChunkResult {
   pixmap: Pixmap;
+  /**
+   * Per-pixel draw-order depth, same size as `pixmap`: 0 for ground, else
+   * the 1-based sort index of the object that last painted that pixel.
+   * The renderer's sway overdraw only writes pixels whose depth is <= the
+   * swaying object's own, so a canopy rustling behind a nearer tree or
+   * bush can't paint over it.
+   */
+  depth: Uint16Array;
   tallGrass: TallGrassSpot[];
   trees: TreeSpot[];
   berryTrees: BerryTreeSpot[];
 }
 
 /**
- * Seat a tree in the ground: an irregular shadow pooled slightly right of
- * the trunk (light comes from the upper left, like the canopy highlights)
- * built from a few overlapping ellipses rather than one clean oval, the
- * tree itself, then grass tufts and odd bits of clutter drawn over its
- * roots so it reads as growing out of the field, not stamped onto it.
- * (x, y) is the tree sprite's top-left in `pm`.
+ * Something standing on the ground, drawn in base-y order with everything
+ * else in the chunk so nearer things overlap farther ones. `ground` (if
+ * any) runs in a pre-pass before every `draw`, for shadows: they belong to
+ * the ground, so no object should end up drawn underneath another's shadow.
+ * `bounds` must cover every pixel `draw` can touch — it's the region diffed
+ * to fill the depth buffer. `spot`, if given, receives the object's depth.
  */
-function drawGroundedTree(
-  pm: Pixmap,
-  x: number,
-  y: number,
-  scale: number,
-  spec: TreeSpec,
-  rng: () => number,
-  shadow: number,
-): void {
+interface Drawable {
+  baseY: number;
+  bounds: Rect;
+  ground?: () => void;
+  draw: () => void;
+  spot?: { depth: number };
+}
+
+/**
+ * Draw `items` back to front (by base y; ties keep insertion order) and
+ * return a depth buffer recording which item last painted each pixel —
+ * found by diffing each item's bounds before and after it draws, which
+ * keeps every sprite routine oblivious to depth.
+ */
+function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
+  const depth = new Uint16Array(pm.w * pm.h);
+  for (const item of items) item.ground?.();
+  const order = items.map((item, i) => ({ item, i })).sort((a, b) => a.item.baseY - b.item.baseY || a.i - b.i);
+  order.forEach(({ item }, n) => {
+    const d = n + 1;
+    const x0 = Math.max(0, Math.floor(item.bounds.x));
+    const y0 = Math.max(0, Math.floor(item.bounds.y));
+    const x1 = Math.min(pm.w, Math.ceil(item.bounds.x + item.bounds.w));
+    const y1 = Math.min(pm.h, Math.ceil(item.bounds.y + item.bounds.h));
+    const bw = x1 - x0;
+    const before = new Uint8Array(Math.max(0, bw * (y1 - y0)));
+    for (let y = y0; y < y1; y++) before.set(pm.data.subarray(y * pm.w + x0, y * pm.w + x1), (y - y0) * bw);
+    item.draw();
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (pm.data[y * pm.w + x] !== before[(y - y0) * bw + (x - x0)]) depth[y * pm.w + x] = d;
+      }
+    }
+    if (item.spot) item.spot.depth = d;
+  });
+  return depth;
+}
+
+/**
+ * Local grove strength at a ground point: low-frequency 2-D noise mapped
+ * so most of the field sits near 0.2 (open, sparse trees) and the peaks
+ * reach 2 (a grove dense enough to saturate the region's tree density).
+ * Stretched wider than tall, since the view is a wide, shallow strip.
+ */
+function groveAt(wx: number, y: number, seed: string): number {
+  const n = valueNoise2D(wx / 110, y / 48, hashString(seed + ":grove"));
+  return 0.2 + 1.8 * smoothstep(0.4, 0.78, n);
+}
+
+/** The patch of ground a tree's trunk and roots take up: what must be clear of the path, water and other trunks. */
+function treeFootprint(cx: number, baseY: number, scale: number): Rect {
+  const w = 26 * scale;
+  return { x: cx - w / 2, y: baseY - 8, w, h: 10 };
+}
+
+/** Every pixel a grounded tree (sprite plus base clutter) can paint. */
+function groundedTreeBounds(x: number, y: number, scale: number): Rect {
+  return { x: x - 2, y, w: TREE_W * scale + 4, h: TREE_H * scale + 6 * scale };
+}
+
+/**
+ * A tree's shadow: pooled slightly right of the trunk (light comes from
+ * the upper left, like the canopy highlights), built from a few
+ * overlapping ellipses rather than one clean oval. (x, y) is the tree
+ * sprite's top-left in `pm`. Consumes `rng` before `drawGroundedTree`
+ * does, so pass both the same stream in that order.
+ */
+function drawTreeShadow(pm: Pixmap, x: number, y: number, scale: number, rng: () => number): void {
   const cx = x + (TREE_W * scale) / 2;
   const baseY = y + Math.round(61 * scale);
-  pm.fillEllipse(cx + 3 * scale, baseY - 1, 17 * scale, 3.5 * scale, shadow);
+  pm.fillEllipse(cx + 3 * scale, baseY - 1, 17 * scale, 3.5 * scale, C.grassDark);
   for (let i = 0; i < 2; i++) {
     const ox = (rng() * 2 - 1) * 10 * scale;
-    pm.fillEllipse(cx + ox + 2 * scale, baseY + (rng() - 0.3) * 2 * scale, (6 + rng() * 6) * scale, 2.5 * scale, shadow);
+    pm.fillEllipse(cx + ox + 2 * scale, baseY + (rng() - 0.3) * 2 * scale, (6 + rng() * 6) * scale, 2.5 * scale, C.grassDark);
   }
+}
+
+/**
+ * The tree itself, then grass tufts and odd bits of clutter drawn over
+ * its roots so it reads as growing out of the field, not stamped onto it.
+ */
+function drawGroundedTree(pm: Pixmap, x: number, y: number, scale: number, spec: TreeSpec, rng: () => number): void {
+  const cx = x + (TREE_W * scale) / 2;
+  const baseY = y + Math.round(61 * scale);
   blitScaled(pm, treePixmap(spec), x, y, scale);
   drawTreeBaseClutter(pm, cx, baseY + Math.round(scale), scale, rng);
 }
@@ -301,6 +369,53 @@ function groundFree(
     if (overlaps(r, o)) return false;
   }
   return true;
+}
+
+/**
+ * Path / road: flat dirt or flat pavement base (a clean switch at the
+ * urban midpoint, like a real road-surface change at a town's edge,
+ * rather than a per-pixel dither across the whole range), fading into
+ * forest at the edges. Width still grows with urban for a wider street.
+ * Topped with sparse authored pebble/seam ticks (tile-grid, like the
+ * grass ticks) instead of per-pixel noise thresholding.
+ */
+function drawPath(pm: Pixmap, x0: number, seed: string): void {
+  for (let lx = 0; lx < CHUNK_W; lx++) {
+    const wx = x0 + lx;
+    const { urban, forest } = regionWeights(wx, seed);
+    if (forest > 0.8) continue;
+    const center = Math.round(pathCenter(wx, seed));
+    const half = 26 + urban * 10;
+    const pt = center - Math.round(half);
+    const pb = center + Math.round(half);
+    const paved = urban > 0.5;
+    for (let y = pt; y <= pb; y++) {
+      if (y < HORIZON || y >= VIEW_H) continue;
+      let c: number = paved ? C.road : C.path;
+      if (y === pt || y === pb) c = paved ? C.roadDark : C.pathEdge;
+      else if (y === pt + 1 || y === pb - 1) c = paved ? C.roadLight : C.pathLight;
+      if (forest > 0) c = ditherPick(C.grassDark, c, forest * 1.1, wx, y);
+      pm.set(lx, y, c);
+    }
+  }
+
+  for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
+    for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
+      const wx = x0 + tx * TILE + TILE / 2;
+      const { urban, forest } = regionWeights(wx, seed);
+      if (forest > 0.8) continue;
+      const center = Math.round(pathCenter(wx, seed));
+      const half = 26 + urban * 10;
+      const pt = center - Math.round(half);
+      const pb = center + Math.round(half);
+      const tileTop = ty * TILE;
+      const tileBottom = tileTop + TILE;
+      if (tileBottom <= pt + 3 || tileTop >= pb - 3) continue;
+      const tileRng = keyRng(seed, "pathtick", x0 + tx * TILE, ty);
+      blit(pm, pathTickTile(tileRng, urban > 0.5), tx * TILE, tileTop);
+    }
+  }
+
 }
 
 /** Generate a full-height chunk (world x in [k*CHUNK_W, (k+1)*CHUNK_W)). */
@@ -452,13 +567,20 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
-  // objects (region-dependent)
+  // path / road, before any objects: everything standing on the ground is
+  // depth-sorted and drawn over it, so a tree just below the path can hang
+  // its canopy over the dirt instead of being kept clear of it.
+  drawPath(pm, x0, seed);
+
+  // objects (region-dependent). Each placement pushes a Drawable; they're
+  // drawn together at the end in base-y order (see `drawSorted`).
   const occupied: Rect[] = [];
+  const drawables: Drawable[] = [];
   const tallGrass: TallGrassSpot[] = [];
   const trees: TreeSpot[] = [];
   const berryTrees: BerryTreeSpot[] = [];
-  let trainerRect: Rect | null = null;
-  let trainerVariant = 0;
+  const fieldTop = HORIZON + 6;
+  const fieldBottom = VIEW_H - 2;
 
   if (cfg.hasBuildings) {
     // buildings along the sidewalk above the road
@@ -477,8 +599,14 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const r: Rect = { x: bx, y: by, w: BUILDING_W, h: BUILDING_H };
       if (!groundFree(r, x0, seed, occupied)) continue;
       occupied.push(r);
-      pm.fillEllipse(bx + BUILDING_W / 2, by + BUILDING_H - 3, 34, 5, C.roadDark);
-      blit(pm, buildingPixmap(Math.floor(bRng() * 3), bRng), bx, by);
+      const type = Math.floor(bRng() * 3);
+      const sprite = buildingPixmap(type, bRng);
+      drawables.push({
+        baseY: by + BUILDING_H,
+        bounds: r,
+        ground: () => pm.fillEllipse(bx + BUILDING_W / 2, by + BUILDING_H - 3, 34, 5, C.roadDark),
+        draw: () => blit(pm, sprite, bx, by),
+      });
     }
   } else {
     // route/forest decorations: same "chunk-wide branch picks the mode,
@@ -488,122 +616,160 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     // as pavement near a chunk that's close to a city.
     const notUrbanAt = (wx: number) => regionWeights(wx, seed).urban < 0.4;
 
-    // trainer (route only)
+    // trainer (route only), standing on the path
     const trainerRng = keyRng(seed, "trainer", k);
     if (cfg.hasTrainer && trainerRng() < 0.35) {
-      trainerVariant = Math.floor(trainerRng() * 3);
+      const variant = Math.floor(trainerRng() * 3);
       const tx = 32 + Math.floor(trainerRng() * (CHUNK_W - 96));
       const wx = x0 + tx + TRAINER_W / 2;
       const base = Math.round(pathCenter(wx, seed));
       const ty = base - TRAINER_H;
       if (notUrbanAt(wx) && ty > HORIZON && base + 4 < VIEW_H) {
-        trainerRect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
-        occupied.push(trainerRect);
+        const r: Rect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
+        occupied.push({ x: tx, y: base - 8, w: TRAINER_W, h: 10 });
+        drawables.push({
+          baseY: base,
+          bounds: r,
+          ground: () => pm.fillEllipse(tx + TRAINER_W / 2, ty + TRAINER_H - 2, 12, 3, C.pathDark),
+          draw: () => blit(pm, trainerPixmap(variant), tx, ty),
+        });
       }
     }
 
-    // trees (denser in forest; irregular spacing, position, and size so the
-    // treeline doesn't read as a ruled-off row of identical stamps)
+    // trees: candidates scattered over the whole field, kept with a
+    // probability of (region density × local grove strength), so they
+    // gather into groves with clearings between rather than sitting on
+    // fixed rows. Only the trunk footprint needs clear ground — canopies
+    // may overlap each other and the path, sorted by depth. Trees lower on
+    // screen (nearer the viewer) are drawn a little larger.
     const treeRng = keyRng(seed, "trees", k);
-    for (const band of [
-      { y: BAND_UPLAND_TREE, jitter: 16 },
-      { y: BAND_LOWLAND_TREE, jitter: 16 },
-    ]) {
-      const prob = band.y === BAND_UPLAND_TREE ? cfg.treeDensityUpland : cfg.treeDensityLowland;
-      let tx = 0;
-      while (tx <= CHUNK_TILES - 2) {
-        const step = 1 + Math.floor(treeRng() * 3);
-        if (treeRng() <= prob) {
-          const scale = 0.82 + treeRng() * 0.36;
-          const w = Math.round(TREE_W * scale);
-          const h = Math.round(TREE_H * scale);
-          const jx = tx * TILE + Math.floor((treeRng() * 2 - 1) * 10);
-          const jy = band.y + Math.floor((treeRng() * 2 - 1) * band.jitter);
-          const r: Rect = {
-            x: Math.max(0, Math.min(CHUNK_W - w, jx)),
-            y: jy,
-            w,
-            h,
-          };
-          if (notUrbanAt(x0 + r.x + w / 2) && groundFree(r, x0, seed, occupied)) {
-            occupied.push(r);
-            const spec = treeSpec(keyRng(seed, "treespec", x0 + r.x, r.y));
-            drawGroundedTree(pm, r.x, r.y, scale, spec, keyRng(seed, "treebase", x0 + r.x, r.y), C.grassDark);
-            trees.push({ x: x0 + r.x, y: r.y, scale, spec });
-          }
-        }
-        tx += step;
-      }
+    for (let i = 0; i < TREE_CANDIDATES; i++) {
+      const lx = Math.floor(treeRng() * CHUNK_W);
+      const baseY = fieldTop + Math.floor(treeRng() * (fieldBottom - fieldTop));
+      const roll = treeRng();
+      const sizeJitter = treeRng();
+      const near = (baseY - HORIZON) / (VIEW_H - HORIZON);
+      const density = cfg.treeDensityUpland + (cfg.treeDensityLowland - cfg.treeDensityUpland) * near;
+      if (roll >= density * groveAt(x0 + lx, baseY, seed)) continue;
+      const scale = (0.72 + near * 0.4) * (0.9 + sizeJitter * 0.2);
+      const w = Math.round(TREE_W * scale);
+      const x = Math.max(0, Math.min(CHUNK_W - w, lx - Math.round(w / 2)));
+      const y = baseY - Math.round(61 * scale);
+      const foot = treeFootprint(x + w / 2, baseY, scale);
+      if (!notUrbanAt(x0 + x + w / 2) || !groundFree(foot, x0, seed, occupied)) continue;
+      occupied.push(foot);
+      const spec = treeSpec(keyRng(seed, "treespec", x0 + x, y));
+      const baseRng = keyRng(seed, "treebase", x0 + x, y);
+      const spot: TreeSpot = { x: x0 + x, y, scale, spec, depth: 0 };
+      trees.push(spot);
+      drawables.push({
+        baseY,
+        bounds: groundedTreeBounds(x, y, scale),
+        ground: () => drawTreeShadow(pm, x, y, scale, baseRng),
+        draw: () => drawGroundedTree(pm, x, y, scale, spec, baseRng),
+        spot,
+      });
     }
 
-    // berry trees
+    // berry tree: at most one, anywhere a trunk fits
     if (cfg.hasBerryTree) {
       const berryRng = keyRng(seed, "berry", k);
       if (berryRng() < 0.3) {
         const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
-        const r: Rect = { x: bx, y: BAND_UPLAND_TREE, w: TREE_W, h: TREE_H };
-        if (notUrbanAt(x0 + bx + TREE_W / 2) && groundFree(r, x0, seed, occupied)) {
-          occupied.push(r);
-          pm.fillEllipse(r.x + TREE_W / 2 + 3, r.y + TREE_H - 4, 18, 3.5, C.grassDark);
-          blit(pm, berryTreePixmap(), r.x, r.y);
-          drawTreeBaseClutter(pm, r.x + TREE_W / 2, r.y + TREE_H - 2, 1, keyRng(seed, "berrybase", k));
-          berryTrees.push({ x: x0 + r.x, y: r.y });
+        const baseY = fieldTop + Math.floor(berryRng() * (fieldBottom - fieldTop));
+        const by = baseY - 61;
+        const foot = treeFootprint(bx + TREE_W / 2, baseY, 1);
+        if (notUrbanAt(x0 + bx + TREE_W / 2) && by >= 0 && groundFree(foot, x0, seed, occupied)) {
+          occupied.push(foot);
+          const baseRng = keyRng(seed, "berrybase", k);
+          const spot: BerryTreeSpot = { x: x0 + bx, y: by, depth: 0 };
+          berryTrees.push(spot);
+          drawables.push({
+            baseY,
+            bounds: groundedTreeBounds(bx, by, 1),
+            ground: () => drawTreeShadow(pm, bx, by, 1, baseRng),
+            draw: () => {
+              blit(pm, berryTreePixmap(), bx, by);
+              drawTreeBaseClutter(pm, bx + TREE_W / 2, baseY + 1, 1, baseRng);
+            },
+            spot,
+          });
         }
       }
     }
 
-    // berry bushes
+    // berry bushes: favour grove edges, where undergrowth would be
     if (cfg.hasBushes) {
       const bushRng = keyRng(seed, "bush", k);
-      const bushes = 2 + Math.floor(bushRng() * 3);
+      const bushes = 3 + Math.floor(bushRng() * 4);
       for (let i = 0; i < bushes; i++) {
         const bx = Math.floor(bushRng() * (CHUNK_W - 32));
-        const by = bushRng() < 0.5 ? BAND_UPLAND_BUSH : BAND_LOWLAND_BUSH;
-        const r: Rect = { x: bx, y: by, w: 32, h: 32 };
-        if (!notUrbanAt(x0 + bx + 16) || !groundFree(r, x0, seed, occupied)) continue;
-        occupied.push(r);
-        pm.fillEllipse(r.x + 16, r.y + 29, 12, 3, C.grassDark);
-        blit(pm, berryBushPixmap(keyRng(seed, "bushtile", k, i)), r.x, r.y);
+        const baseY = fieldTop + Math.floor(bushRng() * (fieldBottom - fieldTop));
+        const keep = bushRng() < 0.25 + 0.4 * Math.min(1, groveAt(x0 + bx + 16, baseY, seed));
+        if (!keep) continue;
+        const by = baseY - 29;
+        const foot: Rect = { x: bx + 4, y: baseY - 6, w: 24, h: 8 };
+        if (!notUrbanAt(x0 + bx + 16) || !groundFree(foot, x0, seed, occupied)) continue;
+        occupied.push(foot);
+        const sprite = berryBushPixmap(keyRng(seed, "bushtile", k, i));
+        drawables.push({
+          baseY,
+          bounds: { x: bx, y: by, w: 32, h: 32 },
+          ground: () => pm.fillEllipse(bx + 17, baseY, 12, 3, C.grassDark),
+          draw: () => blit(pm, sprite, bx, by),
+        });
       }
     }
 
-    // tall grass patches
+    // tall grass: irregular patches of 2–5 tufts scattered around a centre
+    // (staggered in x and y), not one or two tiles squared off on a band
     if (cfg.hasTallGrass) {
       const tallRng = keyRng(seed, "tall", k);
       const patches = 2 + Math.floor(tallRng() * 3);
       for (let i = 0; i < patches; i++) {
-        const tx = Math.floor(tallRng() * (CHUNK_TILES - 2));
-        const wy = tallRng() < 0.5 ? BAND_UPLAND_TALLGRASS : BAND_LOWLAND_TALLGRASS;
-        const wide = tallRng() < 0.4 ? 2 : 1;
-        const r: Rect = { x: tx * TILE, y: wy, w: TILE * wide, h: TILE };
-        if (!notUrbanAt(x0 + r.x + r.w / 2) || !groundFree(r, x0, seed, occupied)) continue;
-        occupied.push(r);
-        for (let t = 0; t < wide; t++) {
-          blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), r.x + t * TILE, r.y);
-          tallGrass.push({ x: x0 + r.x + t * TILE, y: r.y, k, i, t });
+        const cx = Math.floor(tallRng() * (CHUNK_W - TILE));
+        const cy = fieldTop + Math.floor(tallRng() * (fieldBottom - fieldTop - TILE));
+        const n = 2 + Math.floor(tallRng() * 4);
+        for (let t = 0; t < n; t++) {
+          const tx = Math.max(0, Math.min(CHUNK_W - TILE, cx + Math.round((tallRng() * 2 - 1) * TILE)));
+          const ty = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + Math.round((tallRng() * 2 - 1) * 12)));
+          const foot: Rect = { x: tx + 2, y: ty + 20, w: TILE - 4, h: 10 };
+          if (!notUrbanAt(x0 + tx + TILE / 2) || !groundFree(foot, x0, seed, occupied)) continue;
+          occupied.push(foot);
+          const spot: TallGrassSpot = { x: x0 + tx, y: ty, k, i, t, depth: 0 };
+          tallGrass.push(spot);
+          drawables.push({
+            baseY: ty + 30,
+            bounds: { x: tx, y: ty, w: TILE, h: TILE },
+            draw: () => blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), tx, ty),
+            spot,
+          });
         }
       }
     }
 
-    // flower clusters
+    // flower clusters, preferring open ground away from groves
     if (cfg.hasFlowers) {
       const flowerRng = keyRng(seed, "flower", k);
       const clusters = 2 + Math.floor(flowerRng() * 3);
       for (let i = 0; i < clusters; i++) {
         const cx = Math.floor(flowerRng() * CHUNK_W);
-        const cy = flowerRng() < 0.5 ? BAND_UPLAND_FLOWER : BAND_LOWLAND_FLOWER;
+        const cy = fieldTop + Math.floor(flowerRng() * (fieldBottom - fieldTop - TILE));
         const n = 2 + Math.floor(flowerRng() * 3);
+        const open = groveAt(x0 + cx, cy, seed) < 1;
         for (let f = 0; f < n; f++) {
           const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
           const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
+          if (!open) continue;
           const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
           if (!notUrbanAt(x0 + fx + TILE / 2) || !groundFree(r, x0, seed, occupied)) continue;
-          blit(pm, flowerTile(keyRng(seed, "flowertile", k, i, f)), r.x, r.y);
+          const sprite = flowerTile(keyRng(seed, "flowertile", k, i, f));
+          drawables.push({ baseY: fy + TILE - 2, bounds: r, draw: () => blit(pm, sprite, fx, fy) });
         }
       }
     }
 
-    // fence run (route only)
+    // fence run (route only), along the near edge of the path
     if (cfg.hasFence) {
       const fenceRng = keyRng(seed, "fence", k);
       if (fenceRng() < 0.4) {
@@ -619,61 +785,14 @@ export function generateChunk(seed: string, k: number): ChunkResult {
           const r: Rect = { x: lx, y: fy, w: TILE, h: TILE };
           if (!notUrbanAt(wx) || !groundFree(r, x0, seed, occupied)) continue;
           occupied.push(r);
-          blit(pm, fencePixmap(keyRng(seed, "ft", k, s)), lx, fy);
+          const sprite = fencePixmap(keyRng(seed, "ft", k, s));
+          drawables.push({ baseY: fy + 28, bounds: r, draw: () => blit(pm, sprite, lx, fy) });
         }
       }
     }
   }
 
-  // path / road: flat dirt or flat pavement base (a clean switch at the
-  // urban midpoint, like a real road-surface change at a town's edge,
-  // rather than a per-pixel dither across the whole range), fading into
-  // forest at the edges. Width still grows with urban for a wider street.
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const wx = x0 + lx;
-    const { urban, forest } = regionWeights(wx, seed);
-    if (forest > 0.8) continue;
-    const center = Math.round(pathCenter(wx, seed));
-    const half = 26 + urban * 10;
-    const pt = center - Math.round(half);
-    const pb = center + Math.round(half);
-    const paved = urban > 0.5;
-    for (let y = pt; y <= pb; y++) {
-      if (y < HORIZON || y >= VIEW_H) continue;
-      let c: number = paved ? C.road : C.path;
-      if (y === pt || y === pb) c = paved ? C.roadDark : C.pathEdge;
-      else if (y === pt + 1 || y === pb - 1) c = paved ? C.roadLight : C.pathLight;
-      if (forest > 0) c = ditherPick(C.grassDark, c, forest * 1.1, wx, y);
-      pm.set(lx, y, c);
-    }
-  }
-
-  // path/road texture: sparse authored pebble/seam ticks (tile-grid, like
-  // the grass ticks) instead of per-pixel noise thresholding.
-  for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
-    for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
-      const wx = x0 + tx * TILE + TILE / 2;
-      const { urban, forest } = regionWeights(wx, seed);
-      if (forest > 0.8) continue;
-      const center = Math.round(pathCenter(wx, seed));
-      const half = 26 + urban * 10;
-      const pt = center - Math.round(half);
-      const pb = center + Math.round(half);
-      const tileTop = ty * TILE;
-      const tileBottom = tileTop + TILE;
-      if (tileBottom <= pt + 3 || tileTop >= pb - 3) continue;
-      const tileRng = keyRng(seed, "pathtick", x0 + tx * TILE, ty);
-      blit(pm, pathTickTile(tileRng, urban > 0.5), tx * TILE, tileTop);
-    }
-  }
-
-  // trainer drawn last, standing on the path
-  if (trainerRect) {
-    pm.fillEllipse(trainerRect.x + TRAINER_W / 2, trainerRect.y + TRAINER_H - 2, 12, 3, C.pathDark);
-    blit(pm, trainerPixmap(trainerVariant), trainerRect.x, trainerRect.y);
-  }
-
-  // city street furniture (drawn after the road)
+  // city street furniture
   if (cfg.hasStreetFurniture) {
     const lampRng = keyRng(seed, "lamp", k);
     const nLamps = 2 + Math.floor(lampRng() * 2);
@@ -683,7 +802,8 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const [, pb] = pathBand(wx, seed, REGION_CITY);
       const ly = pb + 2;
       if (ly + 56 > VIEW_H) continue;
-      blit(pm, streetlampPixmap(keyRng(seed, "lt", k, i)), lx, ly);
+      const sprite = streetlampPixmap(keyRng(seed, "lt", k, i));
+      drawables.push({ baseY: ly + 56, bounds: { x: lx, y: ly, w: 24, h: 56 }, draw: () => blit(pm, sprite, lx, ly) });
     }
 
     const benchRng = keyRng(seed, "bench", k);
@@ -696,7 +816,8 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const r: Rect = { x: bx, y: by, w: 40, h: 20 };
       if (by < HORIZON) continue;
       if (!groundFree(r, x0, seed, occupied)) continue;
-      blit(pm, benchPixmap(keyRng(seed, "bt", k, i)), bx, by);
+      const sprite = benchPixmap(keyRng(seed, "bt", k, i));
+      drawables.push({ baseY: by + 20, bounds: r, draw: () => blit(pm, sprite, bx, by) });
     }
 
     const fbRng = keyRng(seed, "flowerbed", k);
@@ -709,11 +830,14 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const r: Rect = { x: fx, y: fy, w: 32, h: 14 };
       if (fy < HORIZON) continue;
       if (!groundFree(r, x0, seed, occupied)) continue;
-      blit(pm, flowerBedPixmap(keyRng(seed, "fbt", k, i)), fx, fy);
+      const sprite = flowerBedPixmap(keyRng(seed, "fbt", k, i));
+      drawables.push({ baseY: fy + 14, bounds: r, draw: () => blit(pm, sprite, fx, fy) });
     }
   }
 
-  return { pixmap: pm, tallGrass, trees, berryTrees };
+  const depth = drawSorted(pm, drawables);
+
+  return { pixmap: pm, depth, tallGrass, trees, berryTrees };
 }
 
 /**
@@ -723,12 +847,15 @@ export function generateChunk(seed: string, k: number): ChunkResult {
  */
 export interface ForegroundResult {
   pixmap: Pixmap;
+  /** Same meaning as `ChunkResult.depth`. */
+  depth: Uint16Array;
   trees: TreeSpot[];
 }
 
 export function generateForeground(seed: string, k: number): ForegroundResult {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
   const trees: TreeSpot[] = [];
+  const drawables: Drawable[] = [];
   const rng = keyRng(seed, "fg", k);
   const nTrees = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < nTrees; i++) {
@@ -740,17 +867,31 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
     // sunk just far enough that the root tips run off the bottom edge
     const ty = VIEW_H - h + Math.round(2 * scale);
     const spec = treeSpec(keyRng(seed, "fgspec", k, i));
-    drawGroundedTree(pm, tx, ty, scale, spec, keyRng(seed, "fgbase", k, i), C.grassDark);
-    trees.push({ x: k * CHUNK_W + tx, y: ty, scale, spec });
+    const baseRng = keyRng(seed, "fgbase", k, i);
+    const spot: TreeSpot = { x: k * CHUNK_W + tx, y: ty, scale, spec, depth: 0 };
+    trees.push(spot);
+    drawables.push({
+      baseY: ty + Math.round(61 * scale),
+      bounds: groundedTreeBounds(tx, ty, scale),
+      ground: () => drawTreeShadow(pm, tx, ty, scale, baseRng),
+      draw: () => drawGroundedTree(pm, tx, ty, scale, spec, baseRng),
+      spot,
+    });
   }
   if (rng() < 0.7) {
     const scale = 1.6 + rng() * 0.5;
     const w = Math.round(32 * scale);
     const tx = Math.floor(rng() * (CHUNK_W - w));
     if (!overWater(k * CHUNK_W + tx, w, seed)) {
-      pm.fillEllipse(tx + w / 2, VIEW_H - 5, w * 0.4, 4, C.grassDark);
-      blitScaled(pm, berryBushPixmap(keyRng(seed, "fgb", k)), tx, VIEW_H - Math.round(32 * scale), scale);
+      const by = VIEW_H - Math.round(32 * scale);
+      drawables.push({
+        baseY: VIEW_H,
+        bounds: { x: tx, y: by, w, h: VIEW_H - by },
+        ground: () => pm.fillEllipse(tx + w / 2, VIEW_H - 5, w * 0.4, 4, C.grassDark),
+        draw: () => blitScaled(pm, berryBushPixmap(keyRng(seed, "fgb", k)), tx, by, scale),
+      });
     }
   }
-  return { pixmap: pm, trees };
+  const depth = drawSorted(pm, drawables);
+  return { pixmap: pm, depth, trees };
 }

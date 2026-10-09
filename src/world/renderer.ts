@@ -1,4 +1,4 @@
-import { Pixmap, blit, blitScaled } from "../core/pixmap";
+import { Pixmap, blit } from "../core/pixmap";
 import { SKY, RGBA32, C } from "../core/palette";
 import { ditherPick } from "../core/dither";
 import { noise2i, hashString, keyRng } from "../core/prng";
@@ -26,6 +26,40 @@ import {
 function treeSway(wx: number, time: number, lobeCount: number): number[] {
   const base = time / 1300 + wx * 0.03;
   return Array.from({ length: lobeCount }, (_, idx) => Math.sin(base + idx * 1.3) * 1.8);
+}
+
+/**
+ * `blitScaled` for redrawing a swaying sprite over its own baked chunk:
+ * skips any pixel the chunk's depth buffer says was painted by something
+ * nearer than `own`, so the sway can't draw over objects in front of it.
+ * `chunkLeft` is the chunk's screen x; the sprite lies within the chunk.
+ */
+function blitBehind(
+  dst: Pixmap,
+  src: Pixmap,
+  dx: number,
+  dy: number,
+  scale: number,
+  depth: Uint16Array,
+  chunkLeft: number,
+  own: number,
+): void {
+  const sw = Math.round(src.w * scale);
+  const sh = Math.round(src.h * scale);
+  for (let y = 0; y < sh; y++) {
+    const sy = dy + y;
+    if (sy < 0 || sy >= dst.h) continue;
+    const srcY = Math.min(src.h - 1, Math.floor(y / scale));
+    for (let x = 0; x < sw; x++) {
+      const sx = dx + x;
+      if (sx < 0 || sx >= dst.w) continue;
+      const c = src.data[srcY * src.w + Math.min(src.w - 1, Math.floor(x / scale))];
+      if (c === 0) continue;
+      const lx = sx - chunkLeft;
+      if (lx >= 0 && lx < CHUNK_W && depth[sy * CHUNK_W + lx] > own) continue;
+      dst.data[sy * dst.w + sx] = c;
+    }
+  }
 }
 
 const MAX_CACHED_CHUNKS = 512;
@@ -92,6 +126,12 @@ export class Renderer {
       blit(fb, this.getChunk(k).pixmap, k * CHUNK_W - scrollX, 0);
     }
 
+    // animated water shimmer, tall-grass sway, and tree-canopy sway — all
+    // before the foreground goes on top, so none of them can paint over it
+    this.shimmer(scrollX, time);
+    this.swayGrass(first, last, scrollX, time);
+    this.swayTrees(first, last, scrollX, time);
+
     // foreground (parallax: scrolls faster, drawn last)
     const fgScroll = Math.round(scrollX * PARALLAX);
     const fgFirst = Math.floor(fgScroll / CHUNK_W);
@@ -99,11 +139,6 @@ export class Renderer {
     for (let k = fgFirst; k <= fgLast; k++) {
       blit(fb, this.getFgChunk(k).pixmap, k * CHUNK_W - fgScroll, 0);
     }
-
-    // animated water shimmer, tall-grass sway, and tree-canopy sway
-    this.shimmer(scrollX, time);
-    this.swayGrass(first, last, scrollX, time);
-    this.swayTrees(first, last, scrollX, time);
     this.swayForegroundTrees(fgFirst, fgLast, fgScroll, time);
 
     this.present();
@@ -138,12 +173,14 @@ export class Renderer {
   private swayGrass(first: number, last: number, scrollX: number, time: number): void {
     const fb = this.fb;
     for (let k = first; k <= last; k++) {
-      for (const spot of this.getChunk(k).tallGrass) {
+      const chunk = this.getChunk(k);
+      const chunkLeft = k * CHUNK_W - scrollX;
+      for (const spot of chunk.tallGrass) {
         const screenX = spot.x - scrollX;
         if (screenX < -TILE || screenX >= fb.w) continue;
         const lean = Math.sin(time / 900 + spot.x * 0.05) * 2.4;
         const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
-        blit(fb, tallGrassTile(rng, lean), screenX, spot.y);
+        blitBehind(fb, tallGrassTile(rng, lean), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
       }
     }
   }
@@ -157,18 +194,19 @@ export class Renderer {
     const fb = this.fb;
     for (let k = first; k <= last; k++) {
       const chunk = this.getChunk(k);
+      const chunkLeft = k * CHUNK_W - scrollX;
       for (const spot of chunk.trees) {
         const screenX = spot.x - scrollX;
         const w = Math.round(TREE_W * spot.scale);
         if (screenX < -w || screenX >= fb.w) continue;
         const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
-        blitScaled(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale);
+        blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth);
       }
       for (const spot of chunk.berryTrees) {
         const screenX = spot.x - scrollX;
         if (screenX < -TREE_W || screenX >= fb.w) continue;
         const sway = treeSway(spot.x, time, BERRY_TREE_LOBE_COUNT);
-        blit(fb, berryCanopyPixmap(sway), screenX, spot.y);
+        blitBehind(fb, berryCanopyPixmap(sway), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
       }
     }
   }
@@ -177,12 +215,14 @@ export class Renderer {
   private swayForegroundTrees(first: number, last: number, scrollX: number, time: number): void {
     const fb = this.fb;
     for (let k = first; k <= last; k++) {
-      for (const spot of this.getFgChunk(k).trees) {
+      const chunk = this.getFgChunk(k);
+      const chunkLeft = k * CHUNK_W - scrollX;
+      for (const spot of chunk.trees) {
         const screenX = spot.x - scrollX;
         const w = Math.round(TREE_W * spot.scale);
         if (screenX < -w || screenX >= fb.w) continue;
         const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
-        blitScaled(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale);
+        blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth);
       }
     }
   }

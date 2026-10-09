@@ -81,6 +81,37 @@ describe("generateChunk", () => {
   });
 });
 
+describe("generateChunk depth buffer", () => {
+  it("matches the pixmap size and records every swaying object's depth", () => {
+    for (const seed of ["1790824785082", "42", "hello world"]) {
+      for (const k of [-3, 0, 1, 7]) {
+        const { pixmap, depth, trees, berryTrees, tallGrass } = generateChunk(seed, k);
+        expect(depth.length).toBe(pixmap.w * pixmap.h);
+        const painted = new Set(depth);
+        for (const spot of [...trees, ...berryTrees, ...tallGrass]) {
+          expect(spot.depth).toBeGreaterThan(0);
+        }
+        // a small grass tuft can legitimately end up wholly hidden behind
+        // nearer things; a tree never should
+        for (const spot of [...trees, ...berryTrees]) {
+          expect(painted.has(spot.depth)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("gives nearer (lower on screen) trees a greater depth", () => {
+    const { trees } = generateChunk("1790824785082", 7);
+    const base = (t: (typeof trees)[number]) => t.y + Math.round(61 * t.scale);
+    const byBase = [...trees].sort((a, b) => base(a) - base(b));
+    expect(byBase.length).toBeGreaterThan(1);
+    for (let i = 1; i < byBase.length; i++) {
+      if (base(byBase[i]) === base(byBase[i - 1])) continue;
+      expect(byBase[i].depth).toBeGreaterThan(byBase[i - 1].depth);
+    }
+  });
+});
+
 describe("generateChunk golden hash (refactor-safety net)", () => {
   // Locks in the exact rendered output across a spread of seeds and chunk
   // indices, as a sha256 digest. The point isn't the specific hash — it's
@@ -95,7 +126,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
   // the number), then update GOLDEN_HASH below to the printed "received" value.
   const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
   const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
-  const GOLDEN_HASH = "21b22112f79b268760453425a1c64a000142d562c17c4199bc3b006ec854bb1f";
+  const GOLDEN_HASH = "3e9d8f3544672c2fef4cc1b9ee717a0fd41c1efd58608a9f76613d08f471ecc1";
 
   it("matches the recorded golden hash", () => {
     const hash = createHash("sha256");

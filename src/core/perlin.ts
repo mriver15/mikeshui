@@ -1,4 +1,4 @@
-import { hashString } from "./prng";
+import { hashString, noise2i } from "./prng";
 
 /**
  * 1-D value noise. Terrain curves (path, treeline, lakes, grass tone) are all
@@ -36,4 +36,23 @@ export function fbm1D(x: number, seed: string, octaves = 3): number {
     freq *= 2;
   }
   return sum / norm;
+}
+
+/**
+ * 2-D value noise in [0, 1), on a unit integer lattice with smoothstep
+ * interpolation. World-space like `noise2i`, so it's seamless across chunk
+ * boundaries — used for things that clump in two dimensions (groves).
+ */
+export function valueNoise2D(x: number, y: number, seed: number): number {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const tx = smooth(x - x0);
+  const ty = smooth(y - y0);
+  const a = noise2i(seed, x0, y0);
+  const b = noise2i(seed, x0 + 1, y0);
+  const c = noise2i(seed, x0, y0 + 1);
+  const d = noise2i(seed, x0 + 1, y0 + 1);
+  const top = a + (b - a) * tx;
+  const bottom = c + (d - c) * tx;
+  return top + (bottom - top) * ty;
 }
