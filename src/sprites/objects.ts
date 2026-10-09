@@ -1,4 +1,4 @@
-import { Pixmap } from "../core/pixmap";
+import { Pixmap, blit } from "../core/pixmap";
 import { C } from "../core/palette";
 import type { RNG } from "../core/prng";
 
@@ -23,86 +23,269 @@ function puff(p: Pixmap, cx: number, cy: number, r: number, swayX = 0): void {
   p.fillCircle(cx - r * 0.4, cy - r * 0.46, r * 0.16, C.treeBright);
 }
 
-const TREE_LAYOUTS: number[][][] = [
-  // balanced dome
-  [
-    [32, 15, 11],
-    [17, 22, 12], [32, 18, 13], [47, 22, 12],
-    [14, 32, 13], [32, 30, 14], [50, 32, 13],
-  ],
-  // wide / flat
-  [
-    [32, 16, 10],
-    [15, 23, 12], [32, 19, 12], [49, 23, 12],
-    [10, 33, 13], [24, 32, 14], [40, 32, 14], [54, 33, 13],
-  ],
-  // tall / narrow
-  [
-    [32, 11, 10],
-    [19, 19, 11], [32, 15, 12], [45, 19, 11],
-    [17, 29, 12], [32, 27, 13], [47, 29, 12],
-  ],
-];
+/** One canopy lobe: centre and radius, in 64×64 sprite space. */
+type Lobe = [cx: number, cy: number, r: number];
 
-/** How many canopy lobes `treePixmap(variant)` has — the length a caller's `sway` array should be. */
-export function treeLobeCount(variant = 0): number {
-  return TREE_LAYOUTS[variant % TREE_LAYOUTS.length].length;
+/**
+ * Everything that makes one tree look like itself — canopy lobes, trunk
+ * lean and girth, root flare. Rolled once per placed tree (`treeSpec`) and
+ * kept on its spot, so the renderer can redraw the *same* tree swaying
+ * each frame. Replaces the old three hand-authored lobe layouts, which
+ * repeated visibly across a forest.
+ */
+export interface TreeSpec {
+  lobes: Lobe[];
+  /** Horizontal offset of the trunk top relative to its base. */
+  lean: number;
+  /** Trunk half-width at the top; it flares wider toward the ground. */
+  girth: number;
+  /** Root lengths, negative to the left, positive to the right. */
+  roots: number[];
 }
+
+const TRUNK_BASE_X = 32;
+const TRUNK_BASE_Y = 61;
+
+/**
+ * Roll a tree: a rough dome of 6–10 lobes in three loose rows (narrow
+ * crown, wider middle, widest skirt), each lobe jittered in position and
+ * size, the whole canopy nudged off-centre to match the trunk's lean.
+ * Lobes are kept inside the sprite so nothing clips.
+ */
+export function treeSpec(rng: RNG): TreeSpec {
+  const lean = Math.round((rng() * 2 - 1) * 3);
+  const span = 38 + rng() * 16;
+  const top = 11 + rng() * 5;
+  const bottom = 30 + rng() * 5;
+  const cx = TRUNK_BASE_X + lean + (rng() * 2 - 1) * 2;
+  const sizeK = span / 48;
+  const rows = [
+    { n: 1 + (rng() < 0.4 ? 1 : 0), widthK: 0.35, r: 10 },
+    { n: 2 + (rng() < 0.5 ? 1 : 0), widthK: 0.72, r: 11.5 },
+    { n: 3 + (rng() < 0.5 ? 1 : 0), widthK: 1, r: 12.5 },
+  ];
+  const lobes: Lobe[] = [];
+  rows.forEach((row, ri) => {
+    const y = top + ((bottom - top) * ri) / (rows.length - 1);
+    const rowW = span * row.widthK;
+    for (let i = 0; i < row.n; i++) {
+      const t = row.n === 1 ? 0.5 : i / (row.n - 1);
+      const r = (row.r + (rng() * 2 - 1) * 1.8) * Math.min(1.1, Math.max(0.85, sizeK));
+      let lx = cx - rowW / 2 + rowW * t + (rng() * 2 - 1) * 3;
+      let ly = y + (rng() * 2 - 1) * 2;
+      lx = Math.max(r + 1, Math.min(TREE_W - r - 1, lx));
+      ly = Math.max(r + 1, ly);
+      lobes.push([lx, ly, r]);
+    }
+  });
+  const girth = 3 + rng() * 1.5;
+  const nRoots = 2 + Math.floor(rng() * 3);
+  const roots: number[] = [];
+  for (let i = 0; i < nRoots; i++) {
+    const side = i % 2 === 0 ? -1 : 1;
+    roots.push(side * (5 + Math.floor(rng() * 7)));
+  }
+  return { lobes, lean, girth, roots };
+}
+
+/** How many canopy lobes a tree has — the length a caller's `sway` array should be. */
+export function treeLobeCount(spec: TreeSpec): number {
+  return spec.lobes.length;
+}
+
+/** The fixed look of the berry tree, sharing the trunk/root drawing of regular trees. */
+const BERRY_TREE_SPEC: TreeSpec = {
+  lobes: [
+    [22, 25, 11],
+    [34, 20, 12],
+    [44, 26, 10],
+    [28, 33, 12],
+  ],
+  lean: -1,
+  girth: 3,
+  roots: [-5, 4, -3],
+};
 
 /** How many canopy lobes `berryTreePixmap` has. */
-export const BERRY_TREE_LOBE_COUNT = 4;
+export const BERRY_TREE_LOBE_COUNT = BERRY_TREE_SPEC.lobes.length;
 
 /**
- * A short trunk tucked under the canopy. Takes the lowest point of the
- * canopy puffs so it always reaches up far enough to overlap them — a fixed
- * trunk position left visible gaps under the taller/narrower layouts.
+ * Trunk and roots, drawn into `p` (normally before the canopy). The trunk
+ * is rasterized row by row: it leans from its base toward `spec.lean` at
+ * the top, and its half-width swells quadratically over the bottom third
+ * into a root flare, rather than a straight-sided post standing on the
+ * grass. Right side is shaded, with a few short bark marks. Roots then
+ * snake outward and down into the ground from the flare.
  */
-function drawTrunk(p: Pixmap, lowestCanopyBottom: number): void {
-  const top = Math.min(44, Math.round(lowestCanopyBottom - 5));
-  const bottom = 62;
-  p.fillRect(28, top, 8, bottom - top, C.black);
-  p.fillRect(30, top, 4, bottom - top - 2, C.trunk);
-  p.set(30, top, C.trunkDark);
+function drawTrunk(p: Pixmap, spec: TreeSpec): void {
+  const lowestCanopy = Math.max(...spec.lobes.map(([, cy, r]) => cy + r));
+  const top = Math.round(lowestCanopy - 8);
+  const base = TRUNK_BASE_Y;
+  const span = base - top;
+  const centreAt = (y: number) => TRUNK_BASE_X + spec.lean * ((base - y) / span);
+  const halfAt = (y: number) => {
+    const t = (y - top) / span;
+    const flare = Math.max(0, (t - 0.65) / 0.35);
+    return spec.girth + flare * flare * 4.5;
+  };
+
+  for (let y = top; y <= base; y++) {
+    const c = centreAt(y);
+    const h = halfAt(y);
+    const x0 = Math.round(c - h);
+    const x1 = Math.round(c + h);
+    p.set(x0 - 1, y, C.black);
+    p.set(x1 + 1, y, C.black);
+    for (let x = x0; x <= x1; x++) {
+      p.set(x, y, x >= x1 - Math.max(1, Math.round(h * 0.6)) ? C.trunkDark : C.trunk);
+    }
+  }
+  // bark: short vertical dark strokes, fixed per trunk shape so they don't flicker
+  for (let y = top + 4; y < base - 6; y += 5) {
+    const c = centreAt(y);
+    const bx = Math.round(c - spec.girth * 0.4 + ((y * 7) % 3) - 1);
+    p.set(bx, y, C.trunkDark);
+    p.set(bx, y + 1, C.trunkDark);
+  }
+  p.fillRect(Math.round(centreAt(base)) - 6, base + 1, 13, 1, C.black);
+
+  // roots: 2px-thick tendrils that run outward and sink into the ground,
+  // thinning to 1px at the tip, outlined top and bottom
+  for (const len of spec.roots) {
+    const side = Math.sign(len);
+    const n = Math.abs(len);
+    const sx = Math.round(centreAt(base) + side * (halfAt(base) - 1));
+    const sy = base - 4;
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const x = sx + side * i;
+      const y = sy + Math.round(Math.sqrt(t) * 4);
+      const thick = t < 0.6;
+      p.set(x, y - 1, C.black);
+      p.set(x, y, thick ? C.trunk : C.trunkDark);
+      if (thick) p.set(x, y + 1, C.trunkDark);
+      p.set(x, y + (thick ? 2 : 1), C.black);
+    }
+    p.set(sx + side * (n + 1), sy + 4, C.black);
+  }
+}
+
+function drawCanopy(p: Pixmap, lobes: Lobe[], sway?: number[]): void {
+  lobes.forEach(([cx, cy, r], idx) => puff(p, cx, cy, r, sway?.[idx] ?? 0));
 }
 
 /**
- * Gen-3 style tree: a cluster of overlapping foliage puffs over a short
- * trunk. `variant` picks a different lobe layout for silhouette variety.
- * `sway`, if given, is one x-offset per lobe (same order as the layout) —
- * animating the canopy is each ball nudging independently, not the whole
- * tree shifting as one rigid block. Defaults to no sway, so the baked
- * rest-pose is pixel-identical to calling this with no sway at all.
+ * Just the canopy of a tree, on a transparent 64×64 sprite. The renderer
+ * redraws only this each frame to animate sway, leaving the baked trunk,
+ * roots and ground clutter in the chunk untouched — so grass tufts drawn
+ * in front of the trunk stay in front.
  */
-export function treePixmap(variant = 0, sway?: number[]): Pixmap {
+export function treeCanopyPixmap(spec: TreeSpec, sway?: number[]): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
-  const layout = TREE_LAYOUTS[variant % TREE_LAYOUTS.length];
-  layout.forEach(([cx, cy, r], idx) => puff(p, cx, cy, r, sway?.[idx] ?? 0));
-  const lowestBottom = Math.max(...layout.map(([, cy, r]) => cy + r));
-  drawTrunk(p, lowestBottom);
+  drawCanopy(p, spec.lobes, sway);
+  return p;
+}
+
+/**
+ * Gen-3 style tree: a cluster of overlapping foliage puffs over a leaning,
+ * root-flared trunk. `sway`, if given, is one x-offset per lobe (same
+ * order as `spec.lobes`) — each ball nudges independently, not the whole
+ * tree shifting as one rigid block.
+ */
+export function treePixmap(spec: TreeSpec, sway?: number[]): Pixmap {
+  const p = new Pixmap(TREE_W, TREE_H);
+  drawTrunk(p, spec);
+  drawCanopy(p, spec.lobes, sway);
+  return p;
+}
+
+const BERRY_SPOTS: Array<[number, number]> = [
+  [20, 20], [32, 16], [44, 21], [24, 28], [40, 28], [30, 34], [18, 26], [46, 26],
+];
+
+/** Berry tree canopy only (see `treeCanopyPixmap`). */
+export function berryCanopyPixmap(sway?: number[]): Pixmap {
+  const p = new Pixmap(TREE_W, TREE_H);
+  drawCanopy(p, BERRY_TREE_SPEC.lobes, sway);
+  for (const [bx, by] of BERRY_SPOTS) {
+    p.set(bx, by, C.berry);
+    p.set(bx - 1, by, C.berry);
+    p.set(bx, by - 1, C.berry);
+  }
   return p;
 }
 
 /** A small tree bearing red berries, built from the same puff clusters as treePixmap. */
 export function berryTreePixmap(sway?: number[]): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
-  const puffs: Array<[number, number, number]> = [
-    [22, 25, 11],
-    [34, 20, 12],
-    [44, 26, 10],
-    [28, 33, 12],
-  ];
-  puffs.forEach(([cx, cy, r], idx) => puff(p, cx, cy, r, sway?.[idx] ?? 0));
-  const spots: Array<[number, number]> = [
-    [20, 20], [32, 16], [44, 21], [24, 28], [40, 28], [30, 34], [18, 26], [46, 26],
-  ];
-  for (const [bx, by] of spots) {
-    p.set(bx, by, C.berry);
-    p.set(bx - 1, by, C.berry);
-    p.set(bx, by - 1, C.berry);
-  }
-  const lowestBottom = Math.max(...puffs.map(([, cy, r]) => cy + r));
-  drawTrunk(p, lowestBottom);
+  drawTrunk(p, BERRY_TREE_SPEC);
+  blit(p, berryCanopyPixmap(sway), 0, 0);
   return p;
+}
+
+/**
+ * Ground clutter around a tree's base, drawn into a chunk *after* the tree
+ * so it overlaps the root flare: grass tufts (some between the roots), and
+ * now and then a mushroom or a couple of pebbles. `cx`/`baseY` are the
+ * trunk base in `p`'s coordinates; `scale` matches the tree's draw scale
+ * so a big foreground tree gets proportionally bigger tufts.
+ */
+export function drawTreeBaseClutter(p: Pixmap, cx: number, baseY: number, scale: number, rng: RNG): void {
+  const spread = 16 * scale;
+  const nTufts = 5 + Math.floor(rng() * 4);
+  for (let i = 0; i < nTufts; i++) {
+    // most tufts sit off to the sides, among the root tips, so they don't
+    // bury the flare; the odd one lands right against the trunk
+    const side = i % 2 === 0 ? -1 : 1;
+    const off = rng() < 0.2 ? rng() * 4 : 5 + rng() * (16 - 5);
+    const tx = Math.round(cx + side * off * scale);
+    const ty = Math.round(baseY + rng() * 3 * scale);
+    grassTuft(p, tx, ty, scale, rng);
+  }
+  if (rng() < 0.18) {
+    const side = rng() < 0.5 ? -1 : 1;
+    mushroom(p, Math.round(cx + side * (6 + rng() * 6) * scale), Math.round(baseY + scale), scale);
+  }
+  if (rng() < 0.25) {
+    const px = Math.round(cx + (rng() * 2 - 1) * spread);
+    const py = Math.round(baseY + 2 * scale);
+    pebble(p, px, py, scale);
+    if (rng() < 0.5) pebble(p, px + Math.round(3 * scale), py + 1, scale * 0.7);
+  }
+}
+
+/** A small fan of 3–5 grass blades rooted at (x, y), light-tipped. */
+function grassTuft(p: Pixmap, x: number, y: number, scale: number, rng: RNG): void {
+  const blades = 3 + Math.floor(rng() * 3);
+  const bw = Math.max(1, Math.round(scale));
+  for (let b = 0; b < blades; b++) {
+    const dir = b - (blades - 1) / 2;
+    const h = Math.round((4 + rng() * 4) * scale);
+    for (let yy = 0; yy < h; yy++) {
+      const bx = x + Math.round(dir * bw + (dir * yy) / (3 * scale));
+      const tip = h - yy <= Math.max(1, Math.round(scale));
+      const c = tip ? C.grassBright : yy >= h / 2 ? C.grassLight : C.grassDark;
+      for (let k = 0; k < bw; k++) p.set(bx + k, y - yy, c);
+    }
+  }
+}
+
+/** A tiny red-capped mushroom. */
+function mushroom(p: Pixmap, x: number, y: number, scale: number): void {
+  const s = Math.max(1, Math.round(scale));
+  p.fillRect(x, y - 2 * s, s, 2 * s, C.pathLight);
+  p.fillRect(x - s, y - 3 * s, 3 * s, s, C.flowerRed);
+  p.fillRect(x - s, y - 3 * s - s, 3 * s, s, C.black);
+  p.fillRect(x - 2 * s, y - 3 * s, s, s, C.black);
+  p.fillRect(x + 2 * s, y - 3 * s, s, s, C.black);
+  p.fillRect(x, y - 3 * s, s, s, C.flowerWhite);
+}
+
+/** A small grey stone with a lit top edge. */
+function pebble(p: Pixmap, x: number, y: number, scale: number): void {
+  const s = Math.max(1, Math.round(scale));
+  p.fillRect(x, y - s, 3 * s, 2 * s, C.roadDark);
+  p.fillRect(x, y - s, 2 * s, s, C.roadLight);
 }
 
 /** A low rounded berry bush: three small puffs plus scattered berry dots. */

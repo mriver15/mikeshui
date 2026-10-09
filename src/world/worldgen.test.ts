@@ -62,15 +62,14 @@ describe("generateChunk", () => {
     }
   });
 
-  it("tree/berry-tree spots fall within the chunk's own x-span with a valid variant", () => {
+  it("tree/berry-tree spots fall within the chunk's own x-span with a non-empty canopy", () => {
     for (const seed of ["1790824785082", "42", "hello world"]) {
       for (const k of [-3, 0, 1, 7]) {
         const { trees, berryTrees } = generateChunk(seed, k);
         for (const spot of trees) {
           expect(spot.x).toBeGreaterThanOrEqual(k * CHUNK_W);
           expect(spot.x).toBeLessThan((k + 1) * CHUNK_W);
-          expect(spot.variant).toBeGreaterThanOrEqual(0);
-          expect(spot.variant).toBeLessThan(3);
+          expect(spot.spec.lobes.length).toBeGreaterThan(0);
           expect(spot.scale).toBeGreaterThan(0);
         }
         for (const spot of berryTrees) {
@@ -96,7 +95,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
   // the number), then update GOLDEN_HASH below to the printed "received" value.
   const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
   const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
-  const GOLDEN_HASH = "afb7ecf1c709ed7b7a059488f52adfc0fe0180c314c97872534956dd57d33e5c";
+  const GOLDEN_HASH = "21b22112f79b268760453425a1c64a000142d562c17c4199bc3b006ec854bb1f";
 
   it("matches the recorded golden hash", () => {
     const hash = createHash("sha256");

@@ -3,7 +3,7 @@ import { SKY, RGBA32, C } from "../core/palette";
 import { ditherPick } from "../core/dither";
 import { noise2i, hashString, keyRng } from "../core/prng";
 import { tallGrassTile, TILE } from "../sprites/tiles";
-import { treePixmap, berryTreePixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
+import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
   generateChunk,
   generateForeground,
@@ -148,7 +148,11 @@ export class Renderer {
     }
   }
 
-  /** Same overdraw pattern as `swayGrass`, for background trees and berry trees. */
+  /**
+   * Same overdraw pattern as `swayGrass`, for background trees and berry
+   * trees — canopy only, so the baked trunk, roots and the grass tufts in
+   * front of them aren't painted over.
+   */
   private swayTrees(first: number, last: number, scrollX: number, time: number): void {
     const fb = this.fb;
     for (let k = first; k <= last; k++) {
@@ -157,14 +161,14 @@ export class Renderer {
         const screenX = spot.x - scrollX;
         const w = Math.round(TREE_W * spot.scale);
         if (screenX < -w || screenX >= fb.w) continue;
-        const sway = treeSway(spot.x, time, treeLobeCount(spot.variant));
-        blitScaled(fb, treePixmap(spot.variant, sway), screenX, spot.y, spot.scale);
+        const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
+        blitScaled(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale);
       }
       for (const spot of chunk.berryTrees) {
         const screenX = spot.x - scrollX;
         if (screenX < -TREE_W || screenX >= fb.w) continue;
         const sway = treeSway(spot.x, time, BERRY_TREE_LOBE_COUNT);
-        blit(fb, berryTreePixmap(sway), screenX, spot.y);
+        blit(fb, berryCanopyPixmap(sway), screenX, spot.y);
       }
     }
   }
@@ -177,8 +181,8 @@ export class Renderer {
         const screenX = spot.x - scrollX;
         const w = Math.round(TREE_W * spot.scale);
         if (screenX < -w || screenX >= fb.w) continue;
-        const sway = treeSway(spot.x, time, treeLobeCount(spot.variant));
-        blitScaled(fb, treePixmap(spot.variant, sway), screenX, spot.y, spot.scale);
+        const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
+        blitScaled(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale);
       }
     }
   }

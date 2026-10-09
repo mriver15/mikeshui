@@ -6,7 +6,10 @@ import { fbm1D } from "../core/perlin";
 import { tallGrassTile, flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
 import {
   treePixmap,
+  treeSpec,
   berryTreePixmap,
+  drawTreeBaseClutter,
+  type TreeSpec,
   berryBushPixmap,
   fencePixmap,
   trainerPixmap,
@@ -226,7 +229,7 @@ export interface TreeSpot {
   x: number;
   y: number;
   scale: number;
-  variant: number;
+  spec: TreeSpec;
 }
 
 /** A placed berry tree (fixed look, no variant) — just a position. */
@@ -240,6 +243,34 @@ export interface ChunkResult {
   tallGrass: TallGrassSpot[];
   trees: TreeSpot[];
   berryTrees: BerryTreeSpot[];
+}
+
+/**
+ * Seat a tree in the ground: an irregular shadow pooled slightly right of
+ * the trunk (light comes from the upper left, like the canopy highlights)
+ * built from a few overlapping ellipses rather than one clean oval, the
+ * tree itself, then grass tufts and odd bits of clutter drawn over its
+ * roots so it reads as growing out of the field, not stamped onto it.
+ * (x, y) is the tree sprite's top-left in `pm`.
+ */
+function drawGroundedTree(
+  pm: Pixmap,
+  x: number,
+  y: number,
+  scale: number,
+  spec: TreeSpec,
+  rng: () => number,
+  shadow: number,
+): void {
+  const cx = x + (TREE_W * scale) / 2;
+  const baseY = y + Math.round(61 * scale);
+  pm.fillEllipse(cx + 3 * scale, baseY - 1, 17 * scale, 3.5 * scale, shadow);
+  for (let i = 0; i < 2; i++) {
+    const ox = (rng() * 2 - 1) * 10 * scale;
+    pm.fillEllipse(cx + ox + 2 * scale, baseY + (rng() - 0.3) * 2 * scale, (6 + rng() * 6) * scale, 2.5 * scale, shadow);
+  }
+  blitScaled(pm, treePixmap(spec), x, y, scale);
+  drawTreeBaseClutter(pm, cx, baseY + Math.round(scale), scale, rng);
 }
 
 function overlaps(a: Rect, b: Rect): boolean {
@@ -496,10 +527,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
           };
           if (notUrbanAt(x0 + r.x + w / 2) && groundFree(r, x0, seed, occupied)) {
             occupied.push(r);
-            const variant = Math.floor(treeRng() * 3);
-            pm.fillEllipse(r.x + w / 2, r.y + h - 3, 20 * scale, 4, C.grassDark);
-            blitScaled(pm, treePixmap(variant), r.x, r.y, scale);
-            trees.push({ x: x0 + r.x, y: r.y, scale, variant });
+            const spec = treeSpec(keyRng(seed, "treespec", x0 + r.x, r.y));
+            drawGroundedTree(pm, r.x, r.y, scale, spec, keyRng(seed, "treebase", x0 + r.x, r.y), C.grassDark);
+            trees.push({ x: x0 + r.x, y: r.y, scale, spec });
           }
         }
         tx += step;
@@ -514,8 +544,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
         const r: Rect = { x: bx, y: BAND_UPLAND_TREE, w: TREE_W, h: TREE_H };
         if (notUrbanAt(x0 + bx + TREE_W / 2) && groundFree(r, x0, seed, occupied)) {
           occupied.push(r);
-          pm.fillEllipse(r.x + TREE_W / 2, r.y + TREE_H - 3, 20, 4, C.grassDark);
+          pm.fillEllipse(r.x + TREE_W / 2 + 3, r.y + TREE_H - 4, 18, 3.5, C.grassDark);
           blit(pm, berryTreePixmap(), r.x, r.y);
+          drawTreeBaseClutter(pm, r.x + TREE_W / 2, r.y + TREE_H - 2, 1, keyRng(seed, "berrybase", k));
           berryTrees.push({ x: x0 + r.x, y: r.y });
         }
       }
@@ -706,11 +737,11 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
     const h = Math.round(TREE_H * scale);
     const tx = Math.floor(rng() * (CHUNK_W - w));
     if (overWater(k * CHUNK_W + tx, w, seed)) continue;
-    const ty = VIEW_H - h + 8;
-    const variant = Math.floor(rng() * 3);
-    pm.fillEllipse(tx + w / 2, VIEW_H - 7, w * 0.3, 5, C.grassDark);
-    blitScaled(pm, treePixmap(variant), tx, ty, scale);
-    trees.push({ x: k * CHUNK_W + tx, y: ty, scale, variant });
+    // sunk just far enough that the root tips run off the bottom edge
+    const ty = VIEW_H - h + Math.round(2 * scale);
+    const spec = treeSpec(keyRng(seed, "fgspec", k, i));
+    drawGroundedTree(pm, tx, ty, scale, spec, keyRng(seed, "fgbase", k, i), C.grassDark);
+    trees.push({ x: k * CHUNK_W + tx, y: ty, scale, spec });
   }
   if (rng() < 0.7) {
     const scale = 1.6 + rng() * 0.5;
