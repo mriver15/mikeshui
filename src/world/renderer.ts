@@ -4,6 +4,7 @@ import { ditherPick } from "../core/dither";
 import { keyRng } from "../core/prng";
 import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
+import { Backdrop } from "./backdrop";
 import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
@@ -77,6 +78,7 @@ export class Renderer {
   private chunks = new Map<number, ChunkResult>();
   private fgChunks = new Map<number, ForegroundResult>();
   private clouds: CloudSky;
+  private backdrop: Backdrop;
   private fb = new Pixmap(1, VIEW_H);
   private off: HTMLCanvasElement;
   private offctx: CanvasRenderingContext2D;
@@ -96,6 +98,7 @@ export class Renderer {
     if (!offctx) throw new Error("2D canvas context unavailable");
     this.offctx = offctx;
     this.clouds = new CloudSky(seed);
+    this.backdrop = new Backdrop(seed, HORIZON);
   }
 
   setSeed(seed: string): void {
@@ -103,6 +106,7 @@ export class Renderer {
     this.chunks.clear();
     this.fgChunks.clear();
     this.clouds = new CloudSky(seed);
+    this.backdrop = new Backdrop(seed, HORIZON);
   }
 
   resize(logicalWidth: number): void {
@@ -126,8 +130,17 @@ export class Renderer {
       }
     }
 
-    // clouds, before the terrain so low ones sink behind the hills
-    this.clouds.draw(fb, scrollX, time);
+    // the backdrop, back to front, with the cloud layers slotted between
+    // it: far clouds behind the mountains, mist pooling at the feet of
+    // the far layers, then the forested and meadow hills in front
+    this.clouds.drawLayer(fb, 0, scrollX, time);
+    this.backdrop.drawLayer(fb, 0, scrollX);
+    this.clouds.drawLayer(fb, 1, scrollX, time);
+    this.backdrop.drawLayer(fb, 1, scrollX);
+    this.backdrop.drawMist(fb);
+    this.clouds.drawLayer(fb, 2, scrollX, time);
+    this.backdrop.drawLayer(fb, 2, scrollX);
+    this.backdrop.drawLayer(fb, 3, scrollX);
 
     // chunks
     const first = Math.floor(scrollX / CHUNK_W);

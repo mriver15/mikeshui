@@ -52,17 +52,28 @@ export class CloudSky {
 
   constructor(private seed: string) {}
 
+  /** How many cloud layers there are, back (0) to front. */
+  static readonly LAYER_COUNT = LAYERS.length;
+
+  /** Draw every layer, back to front. */
   draw(fb: Pixmap, scrollX: number, time: number): void {
-    LAYERS.forEach((layer, li) => {
-      const u0 = Math.round(scrollX * layer.parallax + (time / 1000) * layer.drift);
-      const first = Math.floor((u0 - layer.width[1] * STRATUS_STRETCH) / layer.cellW);
-      const last = Math.floor((u0 + fb.w) / layer.cellW);
-      for (let i = first; i <= last; i++) {
-        const slot = this.slot(li, i);
-        if (!slot) continue;
-        blit(fb, slot.pixmap, i * layer.cellW + slot.offset - u0, slot.top);
-      }
-    });
+    for (let li = 0; li < LAYERS.length; li++) this.drawLayer(fb, li, scrollX, time);
+  }
+
+  /**
+   * Draw one layer — so the renderer can interleave cloud layers with the
+   * backdrop's mountains and hills, putting far clouds behind the peaks.
+   */
+  drawLayer(fb: Pixmap, li: number, scrollX: number, time: number): void {
+    const layer = LAYERS[li];
+    const u0 = Math.round(scrollX * layer.parallax + (time / 1000) * layer.drift);
+    const first = Math.floor((u0 - layer.width[1] * STRATUS_STRETCH * 1.6) / layer.cellW);
+    const last = Math.floor((u0 + fb.w) / layer.cellW);
+    for (let i = first; i <= last; i++) {
+      const slot = this.slot(li, i);
+      if (!slot) continue;
+      blit(fb, slot.pixmap, i * layer.cellW + slot.offset - u0, slot.top);
+    }
   }
 
   private slot(li: number, i: number): CloudSlot | null {

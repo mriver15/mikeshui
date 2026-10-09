@@ -22,6 +22,7 @@ const NOT_REFLECTED = new Set([
   C.shore, C.path, C.pathLight, C.pathDark, C.pathEdge, C.road, C.roadDark, C.roadLight,
   C.water, C.waterLight, C.waterDark, C.waterBright, C.waterDeep,
   C.treeline, C.treelineDark, C.treelineHaze, C.treelineHazeLight, C.treelineHazeDark,
+  C.mountain, C.mountainLight, C.mountainDark,
   C.cloud, C.cloudMid, C.cloudShade, C.cloudUnder,
   ...SKY,
 ]);

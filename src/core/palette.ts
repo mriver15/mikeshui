@@ -35,6 +35,11 @@ const NAMED: Array<[string, RGBA]> = [
   ["treelineHaze", hex("73c5a4")],
   ["treelineHazeLight", hex("9adfc2")],
   ["treelineHazeDark", hex("5aa588")],
+  // distant mountains: blue-gray and hazy, so they sit behind the green
+  // hill bands — lit face, shadowed face, and a pale sunlit ridge line
+  ["mountainLight", hex("a9bfe0")],
+  ["mountain", hex("8aa3cf")],
+  ["mountainDark", hex("6c84b6")],
   ["grass", hex("398b31")],
   ["grassLight", hex("83c562")],
   ["grassBright", hex("b4ff83")],

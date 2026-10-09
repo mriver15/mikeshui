@@ -162,16 +162,6 @@ function regionWeights(x: number, seed: string): { urban: number; forest: number
 
 // --- continuous terrain curves (functions of world x, seam-free) ---
 
-/** Distant hazy hills behind everything. */
-function farHillTop(x: number, seed: string): number {
-  return 40 + fbm1D(x / 90, seed + ":far", 2) * 30;
-}
-
-/** Mid-distance forested hills. */
-function midHillTop(x: number, seed: string): number {
-  return 70 + fbm1D(x / 50, seed + ":mid", 3) * 40;
-}
-
 /** The route path's natural meander. */
 function wavyPathCenter(x: number, seed: string): number {
   return 200 + fbm1D(x / 320, seed + ":path", 2) * 28;
@@ -787,48 +777,6 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   const region = regionAt(x0 + CHUNK_W / 2, seed);
   const cfg = REGION_CONFIGS[region === REGION_FOREST ? REGION_FOREST : REGION_ROUTE];
   const waterSeed = hashString(seed + ":water");
-
-  // far hills (hazy) — a light ridge-top line and very sparse soft ticks
-  // so the band isn't a single flat fill, kept subtle since this layer
-  // should read as hazier/less detailed than the mid-hill band in front of it.
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const top = Math.round(farHillTop(x0 + lx, seed));
-    for (let y = top; y < HORIZON; y++) {
-      pm.set(lx, y, y - top < 2 ? C.treelineHazeLight : C.treelineHaze);
-    }
-  }
-  {
-    const farTickRng = keyRng(seed, "fartick", k);
-    const nTicks = Math.round(CHUNK_W / 24);
-    for (let i = 0; i < nTicks; i++) {
-      const lx = Math.floor(farTickRng() * CHUNK_W);
-      const top = Math.round(farHillTop(x0 + lx, seed));
-      const y = top + 3 + Math.floor(farTickRng() * 10);
-      if (y >= HORIZON) continue;
-      pm.set(lx, y, C.treelineHazeDark);
-    }
-  }
-
-  // mid hills (forested)
-  for (let lx = 0; lx < CHUNK_W; lx++) {
-    const top = Math.round(midHillTop(x0 + lx, seed));
-    for (let y = top; y < HORIZON; y++) {
-      pm.set(lx, y, y - top < 4 ? C.treelineDark : C.treeline);
-    }
-  }
-  // sparse tree-crown ticks on the mid hills — small discrete marks read as
-  // individual distant trees, instead of a flat silhouette block.
-  {
-    const hillTickRng = keyRng(seed, "hilltick", k);
-    const nTicks = Math.round(CHUNK_W / 10);
-    for (let i = 0; i < nTicks; i++) {
-      const lx = Math.floor(hillTickRng() * CHUNK_W);
-      const top = Math.round(midHillTop(x0 + lx, seed));
-      const y = top + 2 + Math.floor(hillTickRng() * 7);
-      if (y >= HORIZON) continue;
-      pm.set(lx, y, C.treelineDark);
-    }
-  }
 
   // ground: flat grass, broken up by flat-colored, hard-edged patches of
   // shade (grassDark) and sun (grassLight) whose outlines come from a

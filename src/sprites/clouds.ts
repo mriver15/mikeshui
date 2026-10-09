@@ -20,7 +20,7 @@ const NEAR_TONES = [C.cloud, C.cloudMid, C.cloudShade, C.cloudUnder];
 const FAR_TONES = [C.cloudMid, C.cloudShade, C.cloudShade, C.cloudUnder];
 
 /**
- * A pixel-art cloud about `w` wide. Cumulus: a lumpy base row of puffs on
+ * A pixel-art cloud about `w` wide (a little wider, so no puff is clipped). Cumulus: a lumpy base row of puffs on
  * a flat bottom with 2–4 taller towers rising out of it, like a heap of
  * cotton. Stratus: a long, thin streak of flattened puffs. Either way
  * each puff is shaded like the tree canopy puffs — a shaded base, a
@@ -54,6 +54,20 @@ export function cloudPixmap(rng: RNG, w: number, kind: CloudKind, far: boolean):
       puffs.push({ x, y: Math.max(r + 1, base - r * 1.25 - rng() * h * 0.18), r, sx: 1.05 + rng() * 0.2 });
     }
   }
+
+  // size the sprite to the puffs, not the other way round: end puffs are
+  // wider than the room the layout leaves them, and clamping them to a
+  // fixed box sliced their rounded sides off flat
+  const minX = Math.min(...puffs.map((q) => q.x - q.r * q.sx)) - 1;
+  const maxX = Math.max(...puffs.map((q) => q.x + q.r * q.sx)) + 1;
+  const lift = Math.max(0, Math.ceil(1 - Math.min(...puffs.map((q) => q.y - q.r))));
+  for (const q of puffs) {
+    q.x -= minX;
+    q.y += lift;
+  }
+  base += lift;
+  h += lift;
+  w = Math.ceil(maxX - minX) + 1;
 
   const p = new Pixmap(w, h);
   const tones = far ? FAR_TONES : NEAR_TONES;

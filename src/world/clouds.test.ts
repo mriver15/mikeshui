@@ -25,10 +25,14 @@ describe("clouds", () => {
     expect(a.data).not.toEqual(b.data);
   });
 
-  it("cloud sprites are non-empty at the requested width", () => {
+  it("cloud sprites are non-empty and never clipped at their sides", () => {
     for (let i = 0; i < 20; i++) {
       const p = cloudPixmap(keyRng("c", i), 100, i % 3 === 0 ? "stratus" : "cumulus", i % 2 === 0);
-      expect(p.w).toBe(100);
+      expect(p.w).toBeGreaterThan(50);
+      for (let y = 0; y < p.h; y++) {
+        expect(p.get(0, y)).toBe(0);
+        expect(p.get(p.w - 1, y)).toBe(0);
+      }
       let lowest = -1;
       for (let y = 0; y < p.h; y++) for (let x = 0; x < p.w; x++) if (p.get(x, y)) lowest = y;
       expect(lowest).toBeGreaterThan(0);
