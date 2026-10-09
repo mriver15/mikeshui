@@ -1,4 +1,4 @@
-import { Pixmap, blit } from "../core/pixmap";
+import { Pixmap } from "../core/pixmap";
 import { C } from "../core/palette";
 import type { RNG } from "../core/prng";
 
@@ -106,7 +106,7 @@ const BERRY_TREE_SPEC: TreeSpec = {
   roots: [-5, 4, -3],
 };
 
-/** How many canopy lobes `berryTreePixmap` has. */
+/** How many canopy lobes `berryCanopyPixmap` has. */
 export const BERRY_TREE_LOBE_COUNT = BERRY_TREE_SPEC.lobes.length;
 
 /**
@@ -175,10 +175,12 @@ function drawCanopy(p: Pixmap, lobes: Lobe[], sway?: number[]): void {
 }
 
 /**
- * Just the canopy of a tree, on a transparent 64×64 sprite. The renderer
- * redraws only this each frame to animate sway, leaving the baked trunk,
- * roots and ground clutter in the chunk untouched — so grass tufts drawn
- * in front of the trunk stay in front.
+ * Just the canopy of a tree, on a transparent 64×64 sprite, as a cluster
+ * of overlapping foliage puffs. `sway`, if given, is one x-offset per lobe
+ * (same order as `spec.lobes`) — each ball nudges independently, not the
+ * whole tree shifting as one rigid block. Canopies aren't baked into the
+ * world chunk: the renderer draws them fresh every frame, so a swayed
+ * canopy never leaves its rest pose showing underneath.
  */
 export function treeCanopyPixmap(spec: TreeSpec, sway?: number[]): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
@@ -186,16 +188,10 @@ export function treeCanopyPixmap(spec: TreeSpec, sway?: number[]): Pixmap {
   return p;
 }
 
-/**
- * Gen-3 style tree: a cluster of overlapping foliage puffs over a leaning,
- * root-flared trunk. `sway`, if given, is one x-offset per lobe (same
- * order as `spec.lobes`) — each ball nudges independently, not the whole
- * tree shifting as one rigid block.
- */
-export function treePixmap(spec: TreeSpec, sway?: number[]): Pixmap {
+/** The static part of a tree — leaning, root-flared trunk — that gets baked into the chunk. */
+export function treeTrunkPixmap(spec: TreeSpec): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
   drawTrunk(p, spec);
-  drawCanopy(p, spec.lobes, sway);
   return p;
 }
 
@@ -215,11 +211,10 @@ export function berryCanopyPixmap(sway?: number[]): Pixmap {
   return p;
 }
 
-/** A small tree bearing red berries, built from the same puff clusters as treePixmap. */
-export function berryTreePixmap(sway?: number[]): Pixmap {
+/** Berry tree trunk only (see `treeTrunkPixmap`). */
+export function berryTrunkPixmap(): Pixmap {
   const p = new Pixmap(TREE_W, TREE_H);
   drawTrunk(p, BERRY_TREE_SPEC);
-  blit(p, berryCanopyPixmap(sway), 0, 0);
   return p;
 }
 

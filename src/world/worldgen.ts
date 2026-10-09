@@ -3,11 +3,11 @@ import { C } from "../core/palette";
 import { keyRng, noise2i, hashString } from "../core/prng";
 import { ditherPick, smoothstep } from "../core/dither";
 import { fbm1D, valueNoise2D } from "../core/perlin";
-import { tallGrassTile, flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
+import { flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
 import {
-  treePixmap,
+  treeTrunkPixmap,
   treeSpec,
-  berryTreePixmap,
+  berryTrunkPixmap,
   drawTreeBaseClutter,
   type TreeSpec,
   berryBushPixmap,
@@ -52,7 +52,6 @@ const REGION_CITY = 2;
  */
 interface RegionConfig {
   name: string;
-  hasPatches: boolean;
   hasLake: boolean;
   hasTrainer: boolean;
   treeDensityUpland: number;
@@ -69,7 +68,6 @@ interface RegionConfig {
 const REGION_CONFIGS: Record<number, RegionConfig> = {
   [REGION_ROUTE]: {
     name: "route",
-    hasPatches: true,
     hasLake: true,
     hasTrainer: true,
     treeDensityUpland: 0.3,
@@ -84,7 +82,6 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
   },
   [REGION_FOREST]: {
     name: "forest",
-    hasPatches: true,
     hasLake: true,
     hasTrainer: false,
     treeDensityUpland: 0.55,
@@ -99,7 +96,6 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
   },
   [REGION_CITY]: {
     name: "city",
-    hasPatches: false,
     hasLake: false,
     hasTrainer: false,
     treeDensityUpland: 0,
@@ -145,10 +141,27 @@ function pathCenter(x: number, seed: string): number {
   return 200 + fbm1D(x / 320, seed + ":path", 2) * 28;
 }
 
-function pathBand(x: number, seed: string, region: number): [number, number] {
+/** Below this half-width the path has petered out entirely. */
+const PATH_MIN_HALF = 3;
+
+/**
+ * The path's [top, bottom] rows at world-x `x` — the one definition both
+ * drawing and placement use. Wider as it becomes a city street; as forest
+ * takes over it narrows to a thin trail and then ends, instead of being
+ * dithered away and stopping at a hard vertical edge. Each edge wobbles a
+ * pixel or two in the woods, where nobody keeps the verges straight.
+ * Returns null where there's no path.
+ */
+function pathBand(x: number, seed: string): [number, number] | null {
+  const { urban, forest } = regionWeights(x, seed);
+  const half = (26 + urban * 10) * (1 - smoothstep(0.3, 0.85, forest));
+  if (half < PATH_MIN_HALF) return null;
   const c = Math.round(pathCenter(x, seed));
-  const half = region === REGION_CITY ? 36 : 26;
-  return [c - half, c + half];
+  const ragged = Math.min(1, forest * 2);
+  const pathSeed = hashString(seed + ":pathedge");
+  const jt = Math.round((noise2i(pathSeed, x >> 2, 0) * 2 - 1) * 1.5 * ragged);
+  const jb = Math.round((noise2i(pathSeed, x >> 2, 1) * 2 - 1) * 1.5 * ragged);
+  return [c - Math.round(half) + jt, c + Math.round(half) + jb];
 }
 
 /**
@@ -235,9 +248,10 @@ export interface ChunkResult {
   /**
    * Per-pixel draw-order depth, same size as `pixmap`: 0 for ground, else
    * the 1-based sort index of the object that last painted that pixel.
-   * The renderer's sway overdraw only writes pixels whose depth is <= the
-   * swaying object's own, so a canopy rustling behind a nearer tree or
-   * bush can't paint over it.
+   * Tree canopies and tall grass aren't baked into `pixmap` — they sway,
+   * so the renderer draws them every frame, in depth order, writing only
+   * pixels whose depth is <= their own, so a canopy behind a nearer tree
+   * or bush can't paint over it.
    */
   depth: Uint16Array;
   tallGrass: TallGrassSpot[];
@@ -257,7 +271,8 @@ interface Drawable {
   baseY: number;
   bounds: Rect;
   ground?: () => void;
-  draw: () => void;
+  /** Omitted for things drawn entirely per frame (tall grass), which only need a depth. */
+  draw?: () => void;
   spot?: { depth: number };
 }
 
@@ -280,7 +295,7 @@ function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
     const bw = x1 - x0;
     const before = new Uint8Array(Math.max(0, bw * (y1 - y0)));
     for (let y = y0; y < y1; y++) before.set(pm.data.subarray(y * pm.w + x0, y * pm.w + x1), (y - y0) * bw);
-    item.draw();
+    item.draw?.();
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         if (pm.data[y * pm.w + x] !== before[(y - y0) * bw + (x - x0)]) depth[y * pm.w + x] = d;
@@ -291,6 +306,9 @@ function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
   return depth;
 }
 
+/** `groveAt` runs per ground pixel in forest, so its noise seed is hashed once per world seed, not per call. */
+const groveSeeds = new Map<string, number>();
+
 /**
  * Local grove strength at a ground point: low-frequency 2-D noise mapped
  * so most of the field sits near 0.2 (open, sparse trees) and the peaks
@@ -298,7 +316,12 @@ function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
  * Stretched wider than tall, since the view is a wide, shallow strip.
  */
 function groveAt(wx: number, y: number, seed: string): number {
-  const n = valueNoise2D(wx / 110, y / 48, hashString(seed + ":grove"));
+  let groveSeed = groveSeeds.get(seed);
+  if (groveSeed === undefined) {
+    groveSeed = hashString(seed + ":grove");
+    groveSeeds.set(seed, groveSeed);
+  }
+  const n = valueNoise2D(wx / 110, y / 48, groveSeed);
   return 0.2 + 1.8 * smoothstep(0.4, 0.78, n);
 }
 
@@ -331,13 +354,14 @@ function drawTreeShadow(pm: Pixmap, x: number, y: number, scale: number, rng: ()
 }
 
 /**
- * The tree itself, then grass tufts and odd bits of clutter drawn over
+ * The tree's trunk and roots (its canopy is drawn per frame by the
+ * renderer, see `treeCanopyPixmap`), then grass tufts and odd bits of clutter drawn over
  * its roots so it reads as growing out of the field, not stamped onto it.
  */
 function drawGroundedTree(pm: Pixmap, x: number, y: number, scale: number, spec: TreeSpec, rng: () => number): void {
   const cx = x + (TREE_W * scale) / 2;
   const baseY = y + Math.round(61 * scale);
-  blitScaled(pm, treePixmap(spec), x, y, scale);
+  blitScaled(pm, treeTrunkPixmap(spec), x, y, scale);
   drawTreeBaseClutter(pm, cx, baseY + Math.round(scale), scale, rng);
 }
 
@@ -359,8 +383,8 @@ function groundFree(
   for (let lx = r.x; lx < r.x + r.w; lx += 16) {
     const wx = x0 + lx;
     const region = regionAt(wx, seed);
-    const [pt, pb] = pathBand(wx, seed, region);
-    if (pt < r.y + r.h && pb > r.y) return false;
+    const band = pathBand(wx, seed);
+    if (band && band[0] < r.y + r.h && band[1] > r.y) return false;
     if (region !== REGION_CITY && inLake(wx, seed) && r.y + r.h > LAKE_TOP) {
       return false;
     }
@@ -374,48 +398,59 @@ function groundFree(
 /**
  * Path / road: flat dirt or flat pavement base (a clean switch at the
  * urban midpoint, like a real road-surface change at a town's edge,
- * rather than a per-pixel dither across the whole range), fading into
- * forest at the edges. Width still grows with urban for a wider street.
- * Topped with sparse authored pebble/seam ticks (tile-grid, like the
- * grass ticks) instead of per-pixel noise thresholding.
+ * rather than a per-pixel dither across the whole range), with a dark
+ * edge line and a lit inner line. Where it narrows into a forest trail,
+ * grass blades creep in across it. Topped with sparse authored
+ * pebble/seam ticks (tile-grid, like the grass ticks) clipped to the
+ * path itself so none land on the verge.
  */
 function drawPath(pm: Pixmap, x0: number, seed: string): void {
+  const creepSeed = hashString(seed + ":pathcreep");
+  const bands: Array<[number, number] | null> = [];
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
+    const band = pathBand(wx, seed);
+    bands.push(band);
+    if (!band) continue;
+    const [pt, pb] = band;
     const { urban, forest } = regionWeights(wx, seed);
-    if (forest > 0.8) continue;
-    const center = Math.round(pathCenter(wx, seed));
-    const half = 26 + urban * 10;
-    const pt = center - Math.round(half);
-    const pb = center + Math.round(half);
     const paved = urban > 0.5;
+    const creep = paved ? 0 : smoothstep(0.15, 0.8, forest) * 0.18;
     for (let y = pt; y <= pb; y++) {
       if (y < HORIZON || y >= VIEW_H) continue;
       let c: number = paved ? C.road : C.path;
       if (y === pt || y === pb) c = paved ? C.roadDark : C.pathEdge;
       else if (y === pt + 1 || y === pb - 1) c = paved ? C.roadLight : C.pathLight;
-      if (forest > 0) c = ditherPick(C.grassDark, c, forest * 1.1, wx, y);
       pm.set(lx, y, c);
+    }
+    if (creep > 0) {
+      for (let y = pt + 1; y < pb; y++) {
+        if (noise2i(creepSeed, wx, y) < creep) {
+          pm.set(lx, y, C.grassDark);
+          if (y - 1 > pt) pm.set(lx, y - 1, C.grass);
+        }
+      }
     }
   }
 
   for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
     for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
-      const wx = x0 + tx * TILE + TILE / 2;
-      const { urban, forest } = regionWeights(wx, seed);
-      if (forest > 0.8) continue;
-      const center = Math.round(pathCenter(wx, seed));
-      const half = 26 + urban * 10;
-      const pt = center - Math.round(half);
-      const pb = center + Math.round(half);
+      const mid = bands[tx * TILE + TILE / 2];
+      if (!mid) continue;
       const tileTop = ty * TILE;
-      const tileBottom = tileTop + TILE;
-      if (tileBottom <= pt + 3 || tileTop >= pb - 3) continue;
-      const tileRng = keyRng(seed, "pathtick", x0 + tx * TILE, ty);
-      blit(pm, pathTickTile(tileRng, urban > 0.5), tx * TILE, tileTop);
+      if (tileTop + TILE <= mid[0] + 3 || tileTop >= mid[1] - 3) continue;
+      const urban = regionWeights(x0 + tx * TILE + TILE / 2, seed).urban;
+      const tick = pathTickTile(keyRng(seed, "pathtick", x0 + tx * TILE, ty), urban > 0.5);
+      for (let y = 0; y < TILE; y++) {
+        for (let x = 0; x < TILE; x++) {
+          const c = tick.get(x, y);
+          const band = bands[tx * TILE + x];
+          if (!c || !band || tileTop + y <= band[0] + 1 || tileTop + y >= band[1] - 1) continue;
+          pm.set(tx * TILE + x, tileTop + y, c);
+        }
+      }
     }
   }
-
 }
 
 /** Generate a full-height chunk (world x in [k*CHUNK_W, (k+1)*CHUNK_W)). */
@@ -424,7 +459,6 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   const x0 = k * CHUNK_W;
   const region = regionAt(x0 + CHUNK_W / 2, seed);
   const cfg = REGION_CONFIGS[region];
-  const grassSeed = hashString(seed + ":grass");
   const waterSeed = hashString(seed + ":water");
   const roadSeed = hashString(seed + ":road");
 
@@ -470,29 +504,39 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
-  // ground: flat per-region base color. (Previously dithered a continuous
-  // per-pixel "tone" noise between grassLight/grass/grassDark — at this
-  // view scale ordered dithering reads as a blotchy checker pattern rather
-  // than a gradient, and it's not how GBA tile art varies open ground
-  // anyway: real tilesets use flat fields with a few distinct hand-placed
-  // patches, not a continuous blend. See the patch pass below instead.)
+  // ground: flat grass, broken up by flat-colored, hard-edged patches of
+  // shade (grassDark) and sun (grassLight) whose outlines come from a
+  // two-octave 2-D noise field rather than drawn ellipses — so they're
+  // irregular, and seamless across chunk edges instead of clipped there.
+  // (Not dithered: at this view scale ordered dithering reads as a blotchy
+  // checker rather than a gradient, and GBA tile art varies open ground
+  // with distinct flat patches, not continuous blends.) Shade spreads with
+  // forest weight *and* local grove strength, so it pools under the trees
+  // rather than blanketing the forest floor, while open route keeps only
+  // the odd shady or sunny patch.
+  // City paving overrides it all.
+  const toneSeedA = hashString(seed + ":toneA");
+  const toneSeedB = hashString(seed + ":toneB");
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
     const { urban, forest } = regionWeights(wx, seed);
+    const sunAbove = forest < 0.3 && urban < 0.3 ? 0.78 : 2;
     for (let y = HORIZON; y < VIEW_H; y++) {
       let c = C.grass;
-      if (forest > 0) {
-        const n = noise2i(grassSeed, wx >> 2, y >> 2);
-        const floor = n > 0.85 ? C.grass : C.grassDark;
-        c = ditherPick(floor, c, Math.min(forest, 0.9), wx >> 2, y >> 2);
+      if (urban < 0.35) {
+        const tone = 0.8 * valueNoise2D(wx / 64, y / 22, toneSeedA) + 0.2 * valueNoise2D(wx / 12, y / 5, toneSeedB);
+        const grove = forest > 0 ? (groveAt(wx, y, seed) - 0.2) / 1.8 : 0;
+        const shadeBelow = 0.18 + forest * (0.04 + 0.3 * grove);
+        if (tone < shadeBelow) c = C.grassDark;
+        else if (tone > sunAbove) c = C.grassLight;
       }
       // flat grass below the band, flat pavement above it, dithered only
-      // within a narrow transition — the same fix as the grass tone
-      // gradient: dithering the *entire* urban range produced a wide,
-      // visibly speckled "half-paved" zone across whole city chunks
-      // wherever the slow-moving region noise lingered mid-transition,
-      // rather than a believable sidewalk edge. Also skipped once forest
-      // is established, so residual urban weight can't fleck the woods.
+      // within a narrow transition — dithering the *entire* urban range
+      // produced a wide, visibly speckled "half-paved" zone across whole
+      // city chunks wherever the slow-moving region noise lingered
+      // mid-transition, rather than a believable sidewalk edge. Skipped
+      // once forest is established, so residual urban weight can't fleck
+      // the woods.
       if (forest < 0.3) {
         if (urban > 0.65) c = C.roadLight;
         else if (urban > 0.35) c = ditherPick(C.roadLight, c, (urban - 0.35) / 0.3, wx, y);
@@ -502,26 +546,6 @@ export function generateChunk(seed: string, k: number): ChunkResult {
         if (pn < 0.04) c = C.roadDark;
       }
       pm.set(lx, y, c);
-    }
-  }
-
-  // tonal patches: one or two flat-colored, clean-edged clearings per
-  // chunk (a sunnier or shadier patch of ground) instead of a continuous
-  // dithered gradient — closer to how tile art actually varies open
-  // ground, and reads as a deliberate feature rather than noise. Skipped
-  // in the city itself, where ground is paving, not grass.
-  if (cfg.hasPatches) {
-    const patchRng = keyRng(seed, "patch", k);
-    const nPatches = 1 + Math.floor(patchRng() * 2);
-    for (let i = 0; i < nPatches; i++) {
-      const px = Math.floor(patchRng() * CHUNK_W);
-      const py = HORIZON + 12 + Math.floor(patchRng() * (VIEW_H - HORIZON - 24));
-      const { urban } = regionWeights(x0 + px, seed);
-      if (urban > 0.3) continue;
-      const rx = 36 + patchRng() * 44;
-      const ry = rx * (0.4 + patchRng() * 0.2);
-      const col = patchRng() < 0.5 ? C.grassLight : C.grassDark;
-      pm.fillEllipse(px, py, rx, ry, col);
     }
   }
 
@@ -594,7 +618,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       // that's still rendering as grass near a chunk's edge. Check the
       // actual local weight, not just the chunk's one midpoint sample.
       if (regionWeights(wx, seed).urban < 0.55) continue;
-      const [pt] = pathBand(wx, seed, REGION_CITY);
+      const band = pathBand(wx, seed);
+      if (!band) continue;
+      const [pt] = band;
       const by = pt - BUILDING_H - 10;
       const r: Rect = { x: bx, y: by, w: BUILDING_W, h: BUILDING_H };
       if (!groundFree(r, x0, seed, occupied)) continue;
@@ -624,7 +650,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const wx = x0 + tx + TRAINER_W / 2;
       const base = Math.round(pathCenter(wx, seed));
       const ty = base - TRAINER_H;
-      if (notUrbanAt(wx) && ty > HORIZON && base + 4 < VIEW_H) {
+      const band = pathBand(wx, seed);
+      const onPath = band !== null && band[1] - band[0] >= 20;
+      if (onPath && notUrbanAt(wx) && ty > HORIZON && base + 4 < VIEW_H) {
         const r: Rect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
         occupied.push({ x: tx, y: base - 8, w: TRAINER_W, h: 10 });
         drawables.push({
@@ -689,7 +717,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
             bounds: groundedTreeBounds(bx, by, 1),
             ground: () => drawTreeShadow(pm, bx, by, 1, baseRng),
             draw: () => {
-              blit(pm, berryTreePixmap(), bx, by);
+              blit(pm, berryTrunkPixmap(), bx, by);
               drawTreeBaseClutter(pm, bx + TREE_W / 2, baseY + 1, 1, baseRng);
             },
             spot,
@@ -741,7 +769,6 @@ export function generateChunk(seed: string, k: number): ChunkResult {
           drawables.push({
             baseY: ty + 30,
             bounds: { x: tx, y: ty, w: TILE, h: TILE },
-            draw: () => blit(pm, tallGrassTile(keyRng(seed, "talltile", k, i, t)), tx, ty),
             spot,
           });
         }
@@ -779,7 +806,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
           const lx = start + s * TILE;
           if (lx + TILE > CHUNK_W) break;
           const wx = x0 + lx + 16;
-          const [, pb] = pathBand(wx, seed, REGION_ROUTE);
+          const band = pathBand(wx, seed);
+          if (!band) continue;
+          const [, pb] = band;
           const fy = pb + 8;
           if (fy + TILE > VIEW_H) continue;
           const r: Rect = { x: lx, y: fy, w: TILE, h: TILE };
@@ -799,7 +828,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     for (let i = 0; i < nLamps; i++) {
       const lx = 16 + Math.floor(lampRng() * (CHUNK_W - 48));
       const wx = x0 + lx + 12;
-      const [, pb] = pathBand(wx, seed, REGION_CITY);
+      const band = pathBand(wx, seed);
+      if (!band) continue;
+      const [, pb] = band;
       const ly = pb + 2;
       if (ly + 56 > VIEW_H) continue;
       const sprite = streetlampPixmap(keyRng(seed, "lt", k, i));
@@ -811,7 +842,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     for (let i = 0; i < nBenches; i++) {
       const bx = 16 + Math.floor(benchRng() * (CHUNK_W - 72));
       const wx = x0 + bx + 20;
-      const [pt] = pathBand(wx, seed, REGION_CITY);
+      const band = pathBand(wx, seed);
+      if (!band) continue;
+      const [pt] = band;
       const by = pt - 20;
       const r: Rect = { x: bx, y: by, w: 40, h: 20 };
       if (by < HORIZON) continue;
@@ -825,7 +858,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     for (let i = 0; i < nFb; i++) {
       const fx = 16 + Math.floor(fbRng() * (CHUNK_W - 64));
       const wx = x0 + fx + 16;
-      const [pt] = pathBand(wx, seed, REGION_CITY);
+      const band = pathBand(wx, seed);
+      if (!band) continue;
+      const [pt] = band;
       const fy = pt - 16;
       const r: Rect = { x: fx, y: fy, w: 32, h: 14 };
       if (fy < HORIZON) continue;

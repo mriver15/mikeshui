@@ -129,8 +129,7 @@ export class Renderer {
     // animated water shimmer, tall-grass sway, and tree-canopy sway — all
     // before the foreground goes on top, so none of them can paint over it
     this.shimmer(scrollX, time);
-    this.swayGrass(first, last, scrollX, time);
-    this.swayTrees(first, last, scrollX, time);
+    this.drawAnimated(this.chunkRange(first, last, (k) => this.getChunk(k)), scrollX, time);
 
     // foreground (parallax: scrolls faster, drawn last)
     const fgScroll = Math.round(scrollX * PARALLAX);
@@ -139,7 +138,7 @@ export class Renderer {
     for (let k = fgFirst; k <= fgLast; k++) {
       blit(fb, this.getFgChunk(k).pixmap, k * CHUNK_W - fgScroll, 0);
     }
-    this.swayForegroundTrees(fgFirst, fgLast, fgScroll, time);
+    this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time);
 
     this.present();
   }
@@ -165,66 +164,62 @@ export class Renderer {
   }
 
   /**
-   * Redraws each visible tall-grass tuft with a small time-varying lean,
-   * overdrawing the rest-pose already baked into the chunk — the same
-   * "static raster + small per-frame overdraw" pattern as `shimmer`,
-   * applied to real grass sprites instead of a disconnected overlay mesh.
+   * Draws everything that sways — tall grass and tree canopies — fresh
+   * each frame, since none of it is baked into the chunk. Within a chunk
+   * they go back to front by depth, and each writes only where the
+   * chunk's depth buffer says nothing nearer was baked (see `blitBehind`).
+   * Sprites never straddle chunks, so per-chunk ordering is enough.
    */
-  private swayGrass(first: number, last: number, scrollX: number, time: number): void {
+  private drawAnimated(chunks: Array<{ k: number; chunk: ChunkResult | ForegroundResult }>, scrollX: number, time: number): void {
     const fb = this.fb;
-    for (let k = first; k <= last; k++) {
-      const chunk = this.getChunk(k);
+    for (const { k, chunk } of chunks) {
       const chunkLeft = k * CHUNK_W - scrollX;
-      for (const spot of chunk.tallGrass) {
-        const screenX = spot.x - scrollX;
-        if (screenX < -TILE || screenX >= fb.w) continue;
-        const lean = Math.sin(time / 900 + spot.x * 0.05) * 2.4;
-        const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
-        blitBehind(fb, tallGrassTile(rng, lean), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
+      const items: Array<{ depth: number; draw: () => void }> = [];
+      if ("tallGrass" in chunk) {
+        for (const spot of chunk.tallGrass) {
+          const screenX = spot.x - scrollX;
+          if (screenX < -TILE || screenX >= fb.w) continue;
+          items.push({
+            depth: spot.depth,
+            draw: () => {
+              const lean = Math.sin(time / 900 + spot.x * 0.05) * 2.4;
+              const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
+              blitBehind(fb, tallGrassTile(rng, lean), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
+            },
+          });
+        }
+        for (const spot of chunk.berryTrees) {
+          const screenX = spot.x - scrollX;
+          if (screenX < -TREE_W || screenX >= fb.w) continue;
+          items.push({
+            depth: spot.depth,
+            draw: () => {
+              const sway = treeSway(spot.x, time, BERRY_TREE_LOBE_COUNT);
+              blitBehind(fb, berryCanopyPixmap(sway), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
+            },
+          });
+        }
       }
+      for (const spot of chunk.trees) {
+        const screenX = spot.x - scrollX;
+        if (screenX < -Math.round(TREE_W * spot.scale) || screenX >= fb.w) continue;
+        items.push({
+          depth: spot.depth,
+          draw: () => {
+            const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
+            blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth);
+          },
+        });
+      }
+      items.sort((a, b) => a.depth - b.depth);
+      for (const item of items) item.draw();
     }
   }
 
-  /**
-   * Same overdraw pattern as `swayGrass`, for background trees and berry
-   * trees — canopy only, so the baked trunk, roots and the grass tufts in
-   * front of them aren't painted over.
-   */
-  private swayTrees(first: number, last: number, scrollX: number, time: number): void {
-    const fb = this.fb;
-    for (let k = first; k <= last; k++) {
-      const chunk = this.getChunk(k);
-      const chunkLeft = k * CHUNK_W - scrollX;
-      for (const spot of chunk.trees) {
-        const screenX = spot.x - scrollX;
-        const w = Math.round(TREE_W * spot.scale);
-        if (screenX < -w || screenX >= fb.w) continue;
-        const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
-        blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth);
-      }
-      for (const spot of chunk.berryTrees) {
-        const screenX = spot.x - scrollX;
-        if (screenX < -TREE_W || screenX >= fb.w) continue;
-        const sway = treeSway(spot.x, time, BERRY_TREE_LOBE_COUNT);
-        blitBehind(fb, berryCanopyPixmap(sway), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
-      }
-    }
-  }
-
-  /** Same as `swayTrees`, for the faster-scrolling foreground parallax trees. */
-  private swayForegroundTrees(first: number, last: number, scrollX: number, time: number): void {
-    const fb = this.fb;
-    for (let k = first; k <= last; k++) {
-      const chunk = this.getFgChunk(k);
-      const chunkLeft = k * CHUNK_W - scrollX;
-      for (const spot of chunk.trees) {
-        const screenX = spot.x - scrollX;
-        const w = Math.round(TREE_W * spot.scale);
-        if (screenX < -w || screenX >= fb.w) continue;
-        const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
-        blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth);
-      }
-    }
+  private chunkRange<T>(first: number, last: number, get: (k: number) => T): Array<{ k: number; chunk: T }> {
+    const out: Array<{ k: number; chunk: T }> = [];
+    for (let k = first; k <= last; k++) out.push({ k, chunk: get(k) });
+    return out;
   }
 
   private getFgChunk(k: number): ForegroundResult {
