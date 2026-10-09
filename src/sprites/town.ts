@@ -23,8 +23,8 @@ export interface BuildingSprite {
 export const BUILDING_SIZE: Record<BuildingKind, { w: number; h: number }> = {
   house: { w: 104, h: 84 },
   bighouse: { w: 120, h: 104 },
-  center: { w: 128, h: 92 },
-  mart: { w: 112, h: 84 },
+  center: { w: 152, h: 108 },
+  mart: { w: 128, h: 92 },
 };
 
 interface HouseStyle {
@@ -185,74 +185,231 @@ function housePixmap(big: boolean, rng: RNG): BuildingSprite {
   return { pixmap: p, doorX };
 }
 
-/** Poké Center: an outlined red dome with a pokeball emblem over a wide glass-doored front. */
+/**
+ * Tiny blocky pixel font for signage — just the capitals the service
+ * buildings spell. Each glyph is rows of '1'/'0', 5 rows tall, variable width.
+ */
+const GLYPHS: Record<string, string[]> = {
+  A: ["010", "101", "111", "101", "101"],
+  C: ["011", "100", "100", "100", "011"],
+  E: ["111", "100", "110", "100", "111"],
+  K: ["101", "101", "110", "101", "101"],
+  M: ["10001", "11011", "10101", "10001", "10001"],
+  N: ["1001", "1101", "1011", "1001", "1001"],
+  O: ["010", "101", "101", "101", "010"],
+  P: ["110", "101", "110", "100", "100"],
+  R: ["110", "101", "110", "101", "101"],
+  T: ["111", "010", "010", "010", "010"],
+  " ": ["0", "0", "0", "0", "0"],
+};
+
+/** Pixel width of `text` at `scale`, with one (scaled) pixel between letters. */
+function textWidth(text: string, scale = 1): number {
+  let w = 0;
+  for (const ch of text) w += (GLYPHS[ch][0].length + 1) * scale;
+  return w - scale;
+}
+
+/** Draw `text` centred on `cx` with its top at `y`. */
+function drawText(p: Pixmap, text: string, cx: number, y: number, color: number, scale = 1): void {
+  let x = Math.round(cx - textWidth(text, scale) / 2);
+  for (const ch of text) {
+    const g = GLYPHS[ch];
+    g.forEach((row, ry) => {
+      for (let rx = 0; rx < row.length; rx++) {
+        if (row[rx] === "1") p.fillRect(x + rx * scale, y + ry * scale, scale, scale, color);
+      }
+    });
+    x += (g[0].length + 1) * scale;
+  }
+}
+
+/**
+ * A hip roof seen from the front and above: a trapezoidal top surface
+ * (narrower at the back) with tile courses every 4 rows, a lit left hip
+ * and shaded right hip for volume, then a front fascia band along the
+ * eave. Spans [x0, x1], from `top` back edge to `front` eave.
+ */
+function hipRoof(p: Pixmap, x0: number, x1: number, top: number, front: number, s: HouseStyle, inset = 6): void {
+  const h = front - top;
+  for (let y = top; y < front; y++) {
+    const t = (y - top) / h;
+    const l = Math.round(x0 + inset * (1 - t));
+    const r = Math.round(x1 - inset * (1 - t));
+    p.set(l - 1, y, C.black);
+    p.set(r + 1, y, C.black);
+    for (let x = l; x <= r; x++) {
+      let c = y === top ? C.black : y - top <= 2 ? s.roofLight : (front - y) % 4 === 0 ? s.roofDark : s.roof;
+      if (y !== top && x < l + 3) c = s.roofLight;
+      if (y !== top && x > r - 3) c = s.roofDark;
+      p.set(x, y, c);
+    }
+  }
+  p.fillRect(x0 - 1, front, x1 - x0 + 3, 5, C.black);
+  p.fillRect(x0, front + 1, x1 - x0 + 1, 3, s.roofDark);
+  p.fillRect(x0, front + 1, x1 - x0 + 1, 1, s.roof);
+}
+
+/** A big pokeball emblem: outlined, red top half, white bottom, banded, with a button and a glint. */
+function pokeball(p: Pixmap, cx: number, cy: number, r: number): void {
+  p.fillCircle(cx, cy, r + 1, C.black);
+  p.fillCircle(cx, cy, r, C.houseTrim);
+  for (let y = Math.floor(cy - r); y < cy; y++) {
+    for (let x = Math.floor(cx - r); x <= cx + r; x++) {
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      if (dx * dx + dy * dy <= r * r) p.set(x, y, C.houseRoof);
+    }
+  }
+  p.fillCircle(cx - r * 0.4, cy - r * 0.5, r * 0.25, C.houseRoofLight);
+  p.fillRect(Math.round(cx - r), Math.round(cy) - 1, Math.round(2 * r) + 1, 2, C.black);
+  p.fillCircle(cx, cy, r * 0.38, C.black);
+  p.fillCircle(cx, cy, r * 0.24, C.houseTrim);
+}
+
+/**
+ * Poké Center, after the Gen-3 look: a wide red hip-roofed hall with a
+ * raised central block carrying a big pokeball emblem, a red band
+ * running along the white walls, a lettered sign over a canopy and the
+ * sliding glass doors, and framed windows along both wings.
+ */
 function centerPixmap(): BuildingSprite {
   const { w, h } = BUILDING_SIZE.center;
   const s: HouseStyle = { roof: C.houseRoof, roofDark: C.houseRoofDark, roofLight: C.houseRoofLight, wall: C.houseWall, wallShade: C.houseWallShade };
   const p = new Pixmap(w, h);
   const cx = w / 2;
-  const roofBase = 40;
-  p.fillEllipse(cx, roofBase, cx - 1, 38, s.roofDark);
-  p.fillEllipse(cx, roofBase, cx - 3, 36, s.roof);
-  p.fillEllipse(cx - 6, roofBase - 12, cx * 0.55, 16, s.roofLight);
-  const ey = roofBase - 18;
-  p.fillCircle(cx, ey, 11, C.black);
-  p.fillCircle(cx, ey, 10, C.houseTrim);
-  p.fillRect(cx - 10, ey - 1, 20, 2, C.black);
-  p.fillCircle(cx, ey, 4, C.black);
-  p.fillCircle(cx, ey, 3, C.houseTrim);
-  drawWalls(p, roofBase, s);
-  // sign band over the doors
-  p.fillRect(cx - 18, roofBase + 6, 36, 10, s.roofDark);
-  p.fillRect(cx - 17, roofBase + 7, 34, 8, s.roof);
-  p.fillRect(cx - 2, roofBase + 8, 4, 6, C.houseTrim);
-  p.fillRect(cx - 4, roofBase + 10, 8, 2, C.houseTrim);
+  const wallTop = 40;
+  const blockL = cx - 30;
+  const blockR = cx + 30;
+
+  // wings: the long main roof, then the walls under it
+  hipRoof(p, 3, w - 4, 20, wallTop - 4, s, 8);
+  drawWalls(p, wallTop + 1, s);
+  p.fillRect(WALL_INSET, wallTop + 6, w - 2 * WALL_INSET, 4, C.black);
+  p.fillRect(WALL_INSET, wallTop + 7, w - 2 * WALL_INSET, 2, s.roof);
+
+  // raised central block rising through the main roof, with its own roof
+  p.fillRect(blockL - 1, 14, blockR - blockL + 2, wallTop - 13, C.black);
+  p.fillRect(blockL, 15, blockR - blockL, wallTop - 14, s.wall);
+  p.fillRect(blockR - 6, 15, 6, wallTop - 14, s.wallShade);
+  hipRoof(p, blockL - 3, blockR + 3, 1, 12, s, 6);
+  pokeball(p, cx, 28, 10);
+
+  // sign plate over the canopy: "POKEMON CENTER" in two lines
+  const plateTop = wallTop + 14;
+  p.fillRect(cx - 21, plateTop, 42, 15, C.black);
+  p.fillRect(cx - 20, plateTop + 1, 40, 13, C.houseTrim);
+  drawText(p, "POKEMON", cx, plateTop + 2, s.roof);
+  drawText(p, "CENTER", cx, plateTop + 8, s.roof);
+
+  // canopy over the doors, casting a shadow line onto the wall
+  const doorTop = h - FOOT_H - 26;
+  p.fillRect(cx - 22, doorTop - 6, 44, 5, C.black);
+  p.fillRect(cx - 21, doorTop - 5, 42, 2, s.roofLight);
+  p.fillRect(cx - 21, doorTop - 3, 42, 1, s.roof);
+  p.fillRect(cx - 20, doorTop - 1, 40, 1, s.wallShade);
   drawGlassDoors(p, cx, s);
-  for (const x of [WALL_INSET + 8, WALL_INSET + 28, w - WALL_INSET - 44, w - WALL_INSET - 24]) drawWindow(p, x, roofBase + 18, s);
+
+  // two windows on each wing, clear of the doors and sign
+  for (const x of [WALL_INSET + 6, WALL_INSET + 26, w - WALL_INSET - 40, w - WALL_INSET - 20]) {
+    drawWindow(p, x, wallTop + 20, s, 14, 14);
+  }
   return { pixmap: p, doorX: cx };
 }
 
-/** Poké Mart: a flat blue roof with a stripe, a blue sign band and wide shop windows. */
+/**
+ * Poké Mart, after the Gen-3 look: a blue hip roof, a long signboard
+ * with a pokeball icon and "MART" in big letters, a blue-and-white
+ * striped awning with a scalloped edge over the sliding doors, and shop
+ * windows with stocked shelves on both sides.
+ */
 function martPixmap(): BuildingSprite {
   const { w, h } = BUILDING_SIZE.mart;
   const s: HouseStyle = { roof: C.water, roofDark: C.waterDeep, roofLight: C.waterLight, wall: C.houseWall, wallShade: C.houseWallShade };
   const p = new Pixmap(w, h);
   const cx = w / 2;
-  const roofBase = 30;
-  p.fillRect(2, 10, w - 4, roofBase - 8, s.roofDark);
-  p.fillRect(3, 11, w - 6, roofBase - 11, s.roof);
-  p.fillRect(3, 11, w - 6, 3, s.roofLight);
-  p.fillRect(3, roofBase - 6, w - 6, 2, s.roofDark);
-  p.fillRect(0, roofBase, w, 2, s.roofDark);
-  drawWalls(p, roofBase + 1, s);
-  p.fillRect(cx - 24, roofBase + 5, 48, 11, s.roofDark);
-  p.fillRect(cx - 23, roofBase + 6, 46, 9, s.roof);
-  for (let i = 0; i < 4; i++) p.fillRect(cx - 18 + i * 10, roofBase + 8, 6, 5, C.houseTrim);
-  drawGlassDoors(p, cx, s);
-  for (const x of [WALL_INSET + 6, w - WALL_INSET - 30]) {
-    p.fillRect(x - 1, roofBase + 21, 22, 22, s.roofDark);
-    p.fillRect(x, roofBase + 22, 20, 20, C.houseWindow);
-    p.fillRect(x, roofBase + 22, 20, 2, C.houseTrim);
-    p.fillRect(x + 3, roofBase + 34, 4, 8, C.flowerYellow);
-    p.fillRect(x + 9, roofBase + 36, 4, 6, C.flowerRed);
-    p.fillRect(x + 14, roofBase + 33, 4, 9, C.berryGreen);
+  const wallTop = 28;
+  hipRoof(p, 3, w - 4, 4, wallTop - 4, s, 8);
+  drawWalls(p, wallTop + 1, s);
+
+  // signboard
+  const signTop = wallTop + 4;
+  p.fillRect(cx - 34, signTop, 68, 16, C.black);
+  p.fillRect(cx - 33, signTop + 1, 66, 14, s.roof);
+  p.fillRect(cx - 33, signTop + 1, 66, 2, s.roofLight);
+  pokeball(p, cx - 22, signTop + 8, 4.5);
+  drawText(p, "MART", cx + 7, signTop + 3, C.houseTrim, 2);
+
+  // striped awning with a scalloped lower edge
+  const awnTop = signTop + 19;
+  const awnBottom = awnTop + 7;
+  // each 6px stripe ends in its own rounded scallop, outlined along the
+  // bottom contour only, so the edge reads as one scalloped hem
+  const awnL = WALL_INSET - 1;
+  const awnR = w - WALL_INSET;
+  p.fillRect(awnL - 1, awnTop - 1, awnR - awnL + 2, 1, C.black);
+  for (let x = awnL; x < awnR; x++) {
+    const i = x - awnL;
+    const stripe = Math.floor(i / 6) % 2 === 0 ? s.roof : C.houseTrim;
+    const u = (i % 6) - 2.5;
+    const dip = Math.round(Math.sqrt(Math.max(0, 9 - u * u)));
+    for (let y = awnTop; y < awnBottom + dip; y++) p.set(x, y, y === awnTop && stripe === s.roof ? s.roofLight : stripe);
+    p.set(x, awnBottom + dip, C.black);
   }
+  for (let y = awnTop; y < awnBottom + 1; y++) {
+    p.set(awnL - 1, y, C.black);
+    p.set(awnR, y, C.black);
+  }
+  p.fillRect(WALL_INSET, awnBottom + 4, w - 2 * WALL_INSET, 1, s.wallShade);
+
+  drawGlassDoors(p, cx, s);
+
+  // shop windows with shelves of goods
+  const winTop = awnBottom + 6;
+  const winH = h - FOOT_H - 5 - winTop;
+  const goods = [C.flowerYellow, C.houseRoof, C.berryGreen, C.flowerOrange, C.houseRoofLight, C.water];
+  for (const x of [WALL_INSET + 5, w - WALL_INSET - 5 - 30]) {
+    p.fillRect(x - 1, winTop - 1, 32, winH + 2, C.black);
+    p.fillRect(x, winTop, 30, winH, C.houseWindow);
+    for (let sy = winTop + 6; sy < winTop + winH; sy += 7) {
+      p.fillRect(x, sy, 30, 1, s.roofDark);
+      for (let gx = x + 2, gi = sy + x; gx < x + 28; gx += 4, gi++) {
+        p.fillRect(gx, sy - 3, 2, 3, goods[gi % goods.length]);
+      }
+    }
+    p.set(x + 1, winTop + 1, C.houseTrim);
+    p.set(x + 2, winTop + 1, C.houseTrim);
+    p.set(x + 1, winTop + 2, C.houseTrim);
+    p.fillRect(x - 2, winTop + winH + 1, 34, 2, s.wallShade);
+  }
+  // blue skirting stripe above the foundation
+  p.fillRect(WALL_INSET, h - FOOT_H - 3, w - 2 * WALL_INSET, 3, s.roof);
   return { pixmap: p, doorX: cx };
 }
 
-/** Double automatic glass doors, as on the Center and Mart. */
+/**
+ * Double sliding glass doors, as on the Center and Mart: a dark frame,
+ * two glass leaves split by a mullion, each with a diagonal glint, and a
+ * mat on a pale step in front.
+ */
 function drawGlassDoors(p: Pixmap, cx: number, s: HouseStyle): void {
   const foot = p.h - FOOT_H;
-  const w = 22;
-  const h = 24;
+  const w = 24;
+  const h = 26;
   const x = Math.round(cx - w / 2);
+  p.fillRect(x - 2, foot - h - 2, w + 4, h + 2, C.black);
   p.fillRect(x - 1, foot - h - 1, w + 2, h + 1, s.roofDark);
   p.fillRect(x, foot - h, w, h, C.houseWindow);
   p.fillRect(x + w / 2 - 1, foot - h, 2, h, s.roofDark);
-  p.fillRect(x + 2, foot - h + 2, 2, h - 6, C.houseTrim);
-  p.fillRect(x + w / 2 + 2, foot - h + 2, 2, h - 6, C.houseTrim);
+  for (const lx of [x, x + w / 2 + 1]) {
+    for (let i = 0; i < 6; i++) {
+      p.set(lx + 2 + i, foot - h + 9 - i, C.houseTrim);
+      p.set(lx + 2 + i, foot - h + 13 - i, C.waterLight);
+    }
+  }
   p.fillRect(x - 6, foot, w + 12, 3, C.black);
   p.fillRect(x - 5, foot, w + 10, 2, C.roadLight);
+  p.fillRect(x + 2, foot, w - 4, 2, s.roofDark);
 }
 
 export const PICKET_H = 12;
