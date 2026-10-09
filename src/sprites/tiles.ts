@@ -54,19 +54,18 @@ export function grassTickTile(rng: RNG, dense: boolean): Pixmap {
 }
 
 /**
- * Sparse path/road texture: a few pebble-like flecks for dirt, short seam
- * marks for pavement — same authored-tick approach as grassTickTile, in
- * place of per-pixel noise thresholding.
+ * Sparse dirt-path texture: a few pebble-like flecks per tile — same
+ * authored-tick approach as grassTickTile, in place of per-pixel noise
+ * thresholding.
  */
-export function pathTickTile(rng: RNG, paved: boolean): Pixmap {
+export function pathTickTile(rng: RNG): Pixmap {
   const p = new Pixmap(TILE, TILE);
-  const n = 3;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < 3; i++) {
     const x = Math.floor(rng() * TILE);
     const y = Math.floor(rng() * TILE);
-    const c = rng() < 0.5 ? (paved ? C.roadDark : C.pathDark) : (paved ? C.roadLight : C.pathLight);
+    const c = rng() < 0.5 ? C.pathDark : C.pathLight;
     p.set(x, y, c);
-    if (!paved && rng() < 0.5) p.set(x + 1, y, c);
+    if (rng() < 0.5) p.set(x + 1, y, c);
   }
   return p;
 }

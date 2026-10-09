@@ -23,15 +23,25 @@ import {
   berryBushPixmap,
   fencePixmap,
   trainerPixmap,
+  TREE_W,
+  TREE_H,
+} from "../sprites/objects";
+import {
   buildingPixmap,
   streetlampPixmap,
   benchPixmap,
   flowerBedPixmap,
-  TREE_W,
-  TREE_H,
-  BUILDING_W,
-  BUILDING_H,
-} from "../sprites/objects";
+  picketFencePixmap,
+  hedgePixmap,
+  mailboxPixmap,
+  townSignPixmap,
+  BUILDING_SIZE,
+  PICKET_H,
+  HEDGE_H,
+  SIGN_W,
+  LAMP_W,
+} from "../sprites/town";
+import { findTown, ROAD_HALF, STREET_HALF, type Town, type Lot } from "./town";
 
 export const VIEW_H = 320;
 export const CHUNK_TILES = 16;
@@ -53,12 +63,12 @@ const REGION_CITY = 2;
 /**
  * What spawns in a region and how often — the one place to edit when
  * adding a new region, instead of hunting down `region === REGION_X`
- * checks scattered through generateChunk. Deliberately does NOT cover
- * ground/path color: that's a continuous 2-axis blend (see
- * `regionWeights` below), a different mechanism, and today route and
- * forest already share identical ground colors — only city differs,
- * already handled by the urban blend. A region whose ground color needs
- * to differ (sand, snow, ...) is a real follow-up, not solved here.
+ * checks scattered through generateChunk. Covers only the natural
+ * regions: city stretches are laid out as towns (see `./town` and
+ * `placeTown`), and the countryside around a town — any part of a city
+ * chunk outside the town itself — uses the route config. Deliberately
+ * does NOT cover ground/path color: that's a continuous blend (see
+ * `regionWeights` below), a different mechanism.
  */
 interface RegionConfig {
   name: string;
@@ -75,11 +85,9 @@ interface RegionConfig {
   hasTallGrass: boolean;
   hasFlowers: boolean;
   hasFence: boolean;
-  hasBuildings: boolean;
-  hasStreetFurniture: boolean;
 }
 
-const REGION_CONFIGS: Record<number, RegionConfig> = {
+const REGION_CONFIGS: Record<typeof REGION_ROUTE | typeof REGION_FOREST, RegionConfig> = {
   [REGION_ROUTE]: {
     name: "route",
     hasLake: true,
@@ -93,8 +101,6 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
     hasTallGrass: true,
     hasFlowers: true,
     hasFence: true,
-    hasBuildings: false,
-    hasStreetFurniture: false,
   },
   [REGION_FOREST]: {
     name: "forest",
@@ -109,24 +115,6 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
     hasTallGrass: true,
     hasFlowers: true,
     hasFence: false,
-    hasBuildings: false,
-    hasStreetFurniture: false,
-  },
-  [REGION_CITY]: {
-    name: "city",
-    hasLake: false,
-    hasTrainer: false,
-    treeDensityUpland: 0,
-    treeDensityLowland: 0,
-    coniferShare: 0,
-    undergrowth: 0,
-    hasBerryTree: false,
-    hasBushes: false,
-    hasTallGrass: false,
-    hasFlowers: false,
-    hasFence: false,
-    hasBuildings: true,
-    hasStreetFurniture: true,
   },
 };
 
@@ -137,10 +125,32 @@ function regionAt(x: number, seed: string): number {
   return REGION_ROUTE;
 }
 
-/** Continuous region weights for smooth ground/path blending. */
+/** How far outside a town its influence (path widening and levelling, tidier ground) reaches. */
+const TOWN_APPROACH = 160;
+
+/** The town at (or within `margin` px of) world-x `x`, if any. */
+function townNear(x: number, seed: string, margin = 0): Town | null {
+  return findTown(seed, x, margin, (cx) => regionAt(cx, seed) === REGION_CITY, (cx) => wavyPathCenter(cx, seed));
+}
+
+function inTown(x: number, seed: string): boolean {
+  return townNear(x, seed) !== null;
+}
+
+/**
+ * Continuous region weights for smooth ground/path blending. `urban` is 1
+ * inside a town, easing to 0 over `TOWN_APPROACH` px outside it — tied to
+ * the town's exact extent, so the street, its approach and the edge of
+ * the countryside all agree on where town begins.
+ */
 function regionWeights(x: number, seed: string): { urban: number; forest: number } {
   const v = fbm1D(x / 8000, seed + ":region", 3);
-  const urban = smoothstep(0.67, 0.77, v);
+  const t = townNear(x, seed, TOWN_APPROACH);
+  let urban = 0;
+  if (t) {
+    const d = x < t.start ? t.start - x : x >= t.end ? x - t.end + 1 : 0;
+    urban = 1 - smoothstep(0, TOWN_APPROACH, d);
+  }
   const forest = smoothstep(0.46, 0.56, v) * (1 - urban);
   return { urban, forest };
 }
@@ -157,8 +167,20 @@ function midHillTop(x: number, seed: string): number {
   return 70 + fbm1D(x / 50, seed + ":mid", 3) * 40;
 }
 
-function pathCenter(x: number, seed: string): number {
+/** The route path's natural meander. */
+function wavyPathCenter(x: number, seed: string): number {
   return 200 + fbm1D(x / 320, seed + ":path", 2) * 28;
+}
+
+/**
+ * The path's centre line: the natural meander out in the country, eased
+ * onto a town's dead-straight street as the route approaches it.
+ */
+function pathCenter(x: number, seed: string): number {
+  const wavy = wavyPathCenter(x, seed);
+  const t = townNear(x, seed, TOWN_APPROACH);
+  if (!t) return wavy;
+  return wavy + (t.roadY - wavy) * regionWeights(x, seed).urban;
 }
 
 /** Below this half-width the path has petered out entirely. */
@@ -166,15 +188,18 @@ const PATH_MIN_HALF = 3;
 
 /**
  * The path's [top, bottom] rows at world-x `x` — the one definition both
- * drawing and placement use. Wider as it becomes a city street; as forest
+ * drawing and placement use. In town it's the full street (road plus
+ * sidewalks), and it widens to match on the approach; as forest
  * takes over it narrows to a thin trail and then ends, instead of being
  * dithered away and stopping at a hard vertical edge. Each edge wobbles a
  * pixel or two in the woods, where nobody keeps the verges straight.
  * Returns null where there's no path.
  */
 function pathBand(x: number, seed: string): [number, number] | null {
+  const t = townNear(x, seed);
+  if (t) return [t.roadY - STREET_HALF, t.roadY + STREET_HALF];
   const { urban, forest } = regionWeights(x, seed);
-  const half = (26 + urban * 10) * (1 - smoothstep(0.3, 0.85, forest));
+  const half = (26 + urban * (STREET_HALF - 26)) * (1 - smoothstep(0.3, 0.85, forest));
   if (half < PATH_MIN_HALF) return null;
   const c = Math.round(pathCenter(x, seed));
   const ragged = Math.min(1, forest * 2);
@@ -201,14 +226,14 @@ function inLake(x: number, seed: string): boolean {
 /** Whether a horizontal span [x0, x0+w) crosses any lake water (non-city). */
 function overWater(x0: number, w: number, seed: string): boolean {
   for (let sx = x0; sx <= x0 + w; sx += 24) {
-    if (regionAt(sx, seed) !== REGION_CITY && inLake(sx, seed)) return true;
+    if (!inTown(sx, seed) && inLake(sx, seed)) return true;
   }
   return false;
 }
 
 /** Whether a world-x column is open lake water (for the animated shimmer). */
 export function isWaterAt(x: number, seed: string): boolean {
-  return regionAt(x, seed) !== REGION_CITY && inLake(x, seed);
+  return !inTown(x, seed) && inLake(x, seed);
 }
 
 /**
@@ -312,8 +337,15 @@ function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
     const y0 = Math.max(0, Math.floor(item.bounds.y));
     const x1 = Math.min(pm.w, Math.ceil(item.bounds.x + item.bounds.w));
     const y1 = Math.min(pm.h, Math.ceil(item.bounds.y + item.bounds.h));
+    if (x1 <= x0 || y1 <= y0) {
+      // wholly outside this chunk (a town object belonging to a
+      // neighbour): nothing here to record, though it still gets a depth
+      item.draw?.();
+      if (item.spot) item.spot.depth = d;
+      return;
+    }
     const bw = x1 - x0;
-    const before = new Uint8Array(Math.max(0, bw * (y1 - y0)));
+    const before = new Uint8Array(bw * (y1 - y0));
     for (let y = y0; y < y1; y++) before.set(pm.data.subarray(y * pm.w + x0, y * pm.w + x1), (y - y0) * bw);
     item.draw?.();
     for (let y = y0; y < y1; y++) {
@@ -414,10 +446,9 @@ function groundFree(
   }
   for (let lx = r.x; lx < r.x + r.w; lx += 16) {
     const wx = x0 + lx;
-    const region = regionAt(wx, seed);
     const band = pathBand(wx, seed);
     if (band && band[0] < r.y + r.h && band[1] > r.y) return false;
-    if (region !== REGION_CITY && inLake(wx, seed) && r.y + r.h > LAKE_TOP) {
+    if (!inTown(wx, seed) && inLake(wx, seed) && r.y + r.h > LAKE_TOP) {
       return false;
     }
   }
@@ -428,31 +459,37 @@ function groundFree(
 }
 
 /**
- * Path / road: flat dirt or flat pavement base (a clean switch at the
- * urban midpoint, like a real road-surface change at a town's edge,
- * rather than a per-pixel dither across the whole range), with a dark
- * edge line and a lit inner line. Where it narrows into a forest trail,
- * grass blades creep in across it. Topped with sparse authored
- * pebble/seam ticks (tile-grid, like the grass ticks) clipped to the
- * path itself so none land on the verge.
+ * Path / road. Out in the country: flat dirt with a dark edge line and a
+ * lit inner line; where it narrows into a forest trail, grass blades
+ * creep in across it. Topped with sparse authored pebble ticks
+ * (tile-grid, like the grass ticks) clipped to the path itself so none
+ * land on the verge. In town it's a paved street instead (see
+ * `drawStreetColumn`), switching surface cleanly at the town limits,
+ * where the approaching path has already widened and levelled to meet it.
  */
 function drawPath(pm: Pixmap, x0: number, seed: string): void {
   const creepSeed = hashString(seed + ":pathcreep");
-  const bands: Array<[number, number] | null> = [];
+  const asphaltSeed = hashString(seed + ":asphalt");
+  const dirtBands: Array<[number, number] | null> = [];
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
+    const town = townNear(wx, seed);
+    if (town) {
+      dirtBands.push(null);
+      drawStreetColumn(pm, lx, wx, town, asphaltSeed);
+      continue;
+    }
     const band = pathBand(wx, seed);
-    bands.push(band);
+    dirtBands.push(band);
     if (!band) continue;
     const [pt, pb] = band;
-    const { urban, forest } = regionWeights(wx, seed);
-    const paved = urban > 0.5;
-    const creep = paved ? 0 : smoothstep(0.15, 0.8, forest) * 0.18;
+    const { forest } = regionWeights(wx, seed);
+    const creep = smoothstep(0.15, 0.8, forest) * 0.18;
     for (let y = pt; y <= pb; y++) {
       if (y < HORIZON || y >= VIEW_H) continue;
-      let c: number = paved ? C.road : C.path;
-      if (y === pt || y === pb) c = paved ? C.roadDark : C.pathEdge;
-      else if (y === pt + 1 || y === pb - 1) c = paved ? C.roadLight : C.pathLight;
+      let c: number = C.path;
+      if (y === pt || y === pb) c = C.pathEdge;
+      else if (y === pt + 1 || y === pb - 1) c = C.pathLight;
       pm.set(lx, y, c);
     }
     if (creep > 0) {
@@ -467,19 +504,270 @@ function drawPath(pm: Pixmap, x0: number, seed: string): void {
 
   for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
     for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
-      const mid = bands[tx * TILE + TILE / 2];
+      const mid = dirtBands[tx * TILE + TILE / 2];
       if (!mid) continue;
       const tileTop = ty * TILE;
       if (tileTop + TILE <= mid[0] + 3 || tileTop >= mid[1] - 3) continue;
-      const urban = regionWeights(x0 + tx * TILE + TILE / 2, seed).urban;
-      const tick = pathTickTile(keyRng(seed, "pathtick", x0 + tx * TILE, ty), urban > 0.5);
+      const tick = pathTickTile(keyRng(seed, "pathtick", x0 + tx * TILE, ty));
       for (let y = 0; y < TILE; y++) {
         for (let x = 0; x < TILE; x++) {
           const c = tick.get(x, y);
-          const band = bands[tx * TILE + x];
+          const band = dirtBands[tx * TILE + x];
           if (!c || !band || tileTop + y <= band[0] + 1 || tileTop + y >= band[1] - 1) continue;
           pm.set(tx * TILE + x, tileTop + y, c);
         }
+      }
+    }
+  }
+}
+
+/**
+ * One column of town street, top to bottom: far sidewalk (paving slabs
+ * with seams every 16px), the far curb seen face-on, asphalt with a few
+ * scuffs and a dashed centre line, the near curb seen from above, and
+ * the near sidewalk. The outer edges of both sidewalks are lined, and at
+ * the town limits the sidewalks end in a clean vertical edge.
+ */
+function drawStreetColumn(pm: Pixmap, lx: number, wx: number, town: Town, asphaltSeed: number): void {
+  const c = town.roadY;
+  const top = c - STREET_HALF;
+  const bottom = c + STREET_HALF;
+  const atLimit = wx === town.start || wx === town.end - 1;
+  const seam = wx % 16 === 0;
+  for (let y = top; y <= bottom; y++) {
+    let col: number;
+    if (y === top || y === bottom) col = C.roadDark;
+    else if (y < c - ROAD_HALF - 1) col = seam || y === top + 6 ? C.road : C.roadLight;
+    else if (y === c - ROAD_HALF - 1) col = C.houseWall;
+    else if (y === c - ROAD_HALF) col = C.road;
+    else if (y === c + ROAD_HALF) col = C.road;
+    else if (y === c + ROAD_HALF + 1) col = C.houseWall;
+    else if (y > c + ROAD_HALF + 1) col = seam || y === bottom - 6 ? C.road : C.roadLight;
+    else {
+      col = noise2i(asphaltSeed, wx, y) < 0.04 ? C.road : C.roadDark;
+      if ((y === c - 1 || y === c) && ((wx % 24) + 24) % 24 < 12) col = C.houseWall;
+    }
+    if (atLimit && (y < c - ROAD_HALF || y > c + ROAD_HALF)) col = C.roadDark;
+    pm.set(lx, y, col);
+  }
+}
+
+/**
+ * Everything standing in the town (if any) that overlaps this chunk:
+ * each lot's building, yard and fence, street lamps along both sidewalks,
+ * and the signs at the town limits. Lots are planned in world space (see
+ * `./town`), so a building straddling two chunks is drawn — clipped —
+ * by both, from the same plan.
+ */
+function placeTown(pm: Pixmap, x0: number, seed: string, drawables: Drawable[], trees: TreeSpot[]): void {
+  const town = townNear(x0 + CHUNK_W / 2, seed, CHUNK_W);
+  if (!town) return;
+  const near = (wx: number, w: number) => wx < x0 + CHUNK_W + 128 && wx + w > x0 - 128;
+  const sidewalkTop = town.roadY - STREET_HALF;
+  const sidewalkBottom = town.roadY + STREET_HALF;
+
+  /** A static sprite standing with its bottom row on `baseY`. */
+  const stand = (sprite: Pixmap, wx: number, baseY: number, ground?: () => void) => {
+    const x = wx - x0;
+    const y = baseY - sprite.h + 1;
+    drawables.push({ baseY, bounds: { x, y, w: sprite.w, h: sprite.h }, ground, draw: () => blit(pm, sprite, x, y) });
+  };
+
+  /**
+   * A yard tree with its trunk centred near world-x `cx`. Its sprite is
+   * nudged to sit wholly inside one chunk — the renderer draws swaying
+   * canopies against a single chunk's depth buffer — and only that chunk
+   * places it.
+   */
+  const plantTree = (cx: number, baseY: number, scale: number, key: string) => {
+    const w = Math.round(TREE_W * scale);
+    let tx = Math.round(cx - w / 2);
+    const home = Math.floor((tx + w / 2) / CHUNK_W) * CHUNK_W;
+    tx = Math.max(home, Math.min(home + CHUNK_W - w, tx));
+    if (home !== x0 || baseY >= VIEW_H - 1) return;
+    const x = tx - x0;
+    const y = baseY - Math.round(61 * scale);
+    const kind: TreeKind = keyRng(seed, "towntreekind", key)() < 0.2 ? "conifer" : "broadleaf";
+    const spec = treeSpec(keyRng(seed, "towntree", key), kind);
+    const baseRng = keyRng(seed, "towntreebase", key);
+    const spot: TreeSpot = { x: tx, y, scale, spec, depth: 0 };
+    trees.push(spot);
+    drawables.push({
+      baseY,
+      bounds: groundedTreeBounds(x, y, scale),
+      ground: () => drawTreeShadow(pm, x, y, scale, baseRng),
+      draw: () => drawGroundedTree(pm, x, y, scale, spec, baseRng),
+      spot,
+    });
+  };
+
+  /** A fence or hedge run along `baseY` from world-x `a` to `b`. */
+  const fenceRun = (a: number, b: number, baseY: number, hedge: boolean, key: string) => {
+    const w = Math.round(b - a);
+    if (w < 8) return;
+    stand(hedge ? hedgePixmap(w, keyRng(seed, "hedge", key)) : picketFencePixmap(w), a, baseY);
+  };
+
+  for (const lot of town.lots) {
+    if (!near(lot.x, lot.w)) continue;
+    const key = `${town.start}:${lot.index}`;
+    const rng = keyRng(seed, "lot", key);
+    if (lot.side === "north") placeNorthLot(lot, key, rng);
+    else placeSouthLot(lot, key, rng);
+  }
+
+  // street lamps at a steady rhythm along both sidewalks, staggered
+  for (let wx = town.start + 64; wx < town.end - 32; wx += 240) {
+    if (near(wx, LAMP_W)) stand(streetlampPixmap(keyRng(seed, "lamp", wx)), wx - LAMP_W / 2, sidewalkTop + 3);
+    const sx = wx + 120;
+    if (sx < town.end - 32 && near(sx, LAMP_W)) stand(streetlampPixmap(keyRng(seed, "lamp", sx)), sx - LAMP_W / 2, sidewalkBottom - 1);
+  }
+
+  // town-limits signs beside the approaching path at each end
+  for (const sx of [town.start - 36 - SIGN_W, town.end + 36]) {
+    if (!near(sx, SIGN_W)) continue;
+    const band = pathBand(sx + SIGN_W / 2, seed);
+    if (band) stand(townSignPixmap(), sx, band[0] - 3);
+  }
+
+  function placeNorthLot(lot: Extract<Lot, { side: "north" }>, key: string, rng: () => number): void {
+    if (lot.kind === "park") {
+      // a hedged pocket park: trees, a bench facing the street, flowers,
+      // and a gravel path in from a gap in the hedge
+      const gapX = lot.x + Math.round(lot.w / 2);
+      fenceRun(lot.x, gapX - 9, sidewalkTop - 1, true, key + "a");
+      fenceRun(gapX + 9, lot.x + lot.w, sidewalkTop - 1, true, key + "b");
+      const nTrees = 1 + Math.floor(lot.w / 70);
+      for (let i = 0; i < nTrees; i++) {
+        const cx = lot.x + ((i + 0.5) / nTrees) * lot.w + (rng() * 2 - 1) * 8;
+        plantTree(cx, sidewalkTop - 18 - Math.floor(rng() * 24), 0.8 + rng() * 0.15, key + ":t" + i);
+      }
+      const bench = benchPixmap(rng);
+      stand(bench, gapX - 20, sidewalkTop - 8, () =>
+        pm.fillRect(gapX - 7 - x0, sidewalkTop - 10, 14, 10, C.pathLight),
+      );
+      if (lot.w > 120) stand(flowerBedPixmap(rng, 28), lot.x + 6, sidewalkTop - 30);
+      return;
+    }
+
+    const kind = lot.kind;
+    const size = BUILDING_SIZE[kind];
+    const service = kind === "center" || kind === "mart";
+    const yard = service ? 18 : 12 + Math.floor(rng() * 8);
+    const base = sidewalkTop - yard;
+    const slack = lot.w - size.w;
+    const bx = lot.x + Math.round(slack * (service ? 0.5 : 0.15 + rng() * 0.7));
+    const by = base - size.h;
+    const sprite = buildingPixmap(kind, rng);
+    const doorX = bx + sprite.doorX;
+    const lx = bx - x0;
+
+    drawables.push({
+      baseY: base - 1,
+      bounds: { x: lx, y: by, w: size.w, h: size.h },
+      ground: () => {
+        // contact shadow along the foundation and a cast shadow off the
+        // shaded right-hand wall (light from the upper left)
+        pm.fillRect(lx + 6, base, size.w - 12, 1, C.grassDark);
+        pm.fillRect(lx + size.w - 9, base - 5, 12, 6, C.grassDark);
+        if (service) {
+          // paved forecourt from the doors to the sidewalk
+          const fx = lot.x - x0;
+          pm.fillRect(fx, base, lot.w, sidewalkTop - base, C.roadLight);
+          pm.fillRect(fx, base, lot.w, 1, C.roadDark);
+          pm.fillRect(fx, base, 1, sidewalkTop - base, C.roadDark);
+          pm.fillRect(fx + lot.w - 1, base, 1, sidewalkTop - base, C.roadDark);
+          for (let x = fx + 16; x < fx + lot.w - 1; x += 16) pm.fillRect(x, base + 1, 1, sidewalkTop - base - 1, C.road);
+        } else {
+          // a paved walk from the door down to the sidewalk
+          const wx = doorX - 6 - x0;
+          pm.fillRect(wx, base, 13, sidewalkTop - base, C.roadLight);
+          pm.fillRect(wx - 1, base, 1, sidewalkTop - base, C.roadDark);
+          pm.fillRect(wx + 13, base, 1, sidewalkTop - base, C.roadDark);
+          for (let y = base + 4; y < sidewalkTop; y += 4) pm.fillRect(wx, y, 13, 1, C.road);
+        }
+      },
+      draw: () => blit(pm, sprite.pixmap, lx, by),
+    });
+
+    if (service) {
+      stand(flowerBedPixmap(rng, 28), lot.x + 4, sidewalkTop - 2);
+      stand(flowerBedPixmap(rng, 28), lot.x + lot.w - 32, sidewalkTop - 2);
+      return;
+    }
+
+    // front fence or hedge with a gate at the walk, a mailbox by the gate
+    const hedge = rng() < 0.35;
+    fenceRun(lot.x, doorX - 9, sidewalkTop - 1, hedge, key + "a");
+    fenceRun(doorX + 9, lot.x + lot.w, sidewalkTop - 1, hedge, key + "b");
+    stand(mailboxPixmap(rng), doorX + 11, sidewalkTop + 1);
+
+    // a flower bed against the front wall, on whichever side of the door has room
+    if (rng() < 0.65) {
+      const bw = 24 + Math.floor(rng() * 3) * 8;
+      const leftRoom = doorX - 10 - (bx + 10);
+      const rightRoom = bx + size.w - 18 - (doorX + 10);
+      const fx = leftRoom >= bw ? doorX - 10 - bw : rightRoom >= bw ? doorX + 10 : null;
+      if (fx !== null) stand(flowerBedPixmap(rng, bw), fx, base + 3);
+    }
+
+    // a tree in the roomier side yard
+    const leftYard = bx - lot.x;
+    const rightYard = lot.x + lot.w - (bx + size.w);
+    if (Math.max(leftYard, rightYard) >= 28 && rng() < 0.8) {
+      const cx = leftYard > rightYard ? lot.x + leftYard / 2 : bx + size.w + rightYard / 2;
+      plantTree(cx, sidewalkTop - 4 - Math.floor(rng() * 8), 0.75 + rng() * 0.15, key + ":t");
+    }
+  }
+
+  function placeSouthLot(lot: Extract<Lot, { side: "south" }>, key: string, rng: () => number): void {
+    const fenceBase = sidewalkBottom + PICKET_H + 1;
+    switch (lot.kind) {
+      case "garden": {
+        // a hedge along the sidewalk, then rows of flowers planted in
+        // dug soil beds rather than floating on the lawn
+        fenceRun(lot.x, lot.x + lot.w, sidewalkBottom + HEDGE_H + 1, true, key);
+        for (const row of [34, 54]) {
+          const by = sidewalkBottom + row;
+          if (by >= VIEW_H - 1) continue;
+          const px = lot.x + 4 - x0;
+          const pw = lot.w - 8;
+          drawables.push({
+            baseY: by - 12,
+            bounds: { x: px, y: by - 12, w: pw, h: 14 },
+            ground: () => {
+              pm.fillRect(px, by - 9, pw, 11, C.trunkDark);
+              pm.fillRect(px + 1, by - 8, pw - 2, 9, C.trunk);
+              for (let x = px + 3; x < px + pw - 2; x += 5) pm.set(x, by - 4, C.trunkDark);
+            },
+          });
+          for (let x = lot.x + 6; x + 32 <= lot.x + lot.w - 4; x += 40) stand(flowerBedPixmap(rng, 32), x, by - 2);
+        }
+        break;
+      }
+      case "trees": {
+        fenceRun(lot.x, lot.x + lot.w, fenceBase, false, key);
+        const n = lot.w > 110 ? 2 : 1;
+        for (let i = 0; i < n; i++) {
+          const cx = lot.x + ((i + 0.5) / n) * lot.w + (rng() * 2 - 1) * 10;
+          plantTree(cx, sidewalkBottom + 30 + Math.floor(rng() * 22), 0.95 + rng() * 0.15, key + ":t" + i);
+        }
+        break;
+      }
+      case "nook": {
+        const cx = lot.x + Math.round(lot.w / 2);
+        const bench = benchPixmap(rng);
+        stand(bench, cx - 20, sidewalkBottom + 22, () =>
+          pm.fillRect(cx - 24 - x0, sidewalkBottom + 1, 48, 24, C.roadLight),
+        );
+        stand(flowerBedPixmap(rng, 24), cx - 52, sidewalkBottom + 18);
+        stand(flowerBedPixmap(rng, 24), cx + 28, sidewalkBottom + 18);
+        break;
+      }
+      case "lawn": {
+        fenceRun(lot.x, lot.x + lot.w, fenceBase, false, key);
+        stand(mailboxPixmap(rng), lot.x + Math.round(lot.w * (0.2 + rng() * 0.6)), sidewalkBottom - 1);
+        break;
       }
     }
   }
@@ -489,10 +777,11 @@ function drawPath(pm: Pixmap, x0: number, seed: string): void {
 export function generateChunk(seed: string, k: number): ChunkResult {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
   const x0 = k * CHUNK_W;
+  // the countryside config for this chunk; a city chunk's non-town edges
+  // are ordinary route
   const region = regionAt(x0 + CHUNK_W / 2, seed);
-  const cfg = REGION_CONFIGS[region];
+  const cfg = REGION_CONFIGS[region === REGION_FOREST ? REGION_FOREST : REGION_ROUTE];
   const waterSeed = hashString(seed + ":water");
-  const roadSeed = hashString(seed + ":road");
 
   // far hills (hazy) — a light ridge-top line and very sparse soft ticks
   // so the band isn't a single flat fill, kept subtle since this layer
@@ -546,7 +835,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   // forest weight *and* local grove strength, so it pools under the trees
   // rather than blanketing the forest floor, while open route keeps only
   // the odd shady or sunny patch.
-  // City paving overrides it all.
+  // Towns keep tidy lawns: no patches inside them or on the approach.
   const toneSeedA = hashString(seed + ":toneA");
   const toneSeedB = hashString(seed + ":toneB");
   for (let lx = 0; lx < CHUNK_W; lx++) {
@@ -562,21 +851,6 @@ export function generateChunk(seed: string, k: number): ChunkResult {
         if (tone < shadeBelow) c = C.grassDark;
         else if (tone > sunAbove) c = C.grassLight;
       }
-      // flat grass below the band, flat pavement above it, dithered only
-      // within a narrow transition — dithering the *entire* urban range
-      // produced a wide, visibly speckled "half-paved" zone across whole
-      // city chunks wherever the slow-moving region noise lingered
-      // mid-transition, rather than a believable sidewalk edge. Skipped
-      // once forest is established, so residual urban weight can't fleck
-      // the woods.
-      if (forest < 0.3) {
-        if (urban > 0.65) c = C.roadLight;
-        else if (urban > 0.35) c = ditherPick(C.roadLight, c, (urban - 0.35) / 0.3, wx, y);
-      }
-      if (urban > 0.8) {
-        const pn = noise2i(roadSeed, wx >> 2, y >> 2);
-        if (pn < 0.04) c = C.roadDark;
-      }
       pm.set(lx, y, c);
     }
   }
@@ -588,9 +862,8 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
       const wx = x0 + tx * TILE + TILE / 2;
       const wy = ty * TILE;
-      const { urban, forest } = regionWeights(wx, seed);
-      if (urban > 0.35 || regionAt(wx, seed) === REGION_CITY) continue;
-      if (regionAt(wx, seed) !== REGION_CITY && inLake(wx, seed) && wy + TILE > LAKE_TOP) continue;
+      const { forest } = regionWeights(wx, seed);
+      if (!inTown(wx, seed) && inLake(wx, seed) && wy + TILE > LAKE_TOP) continue;
       const tileRng = keyRng(seed, "grasstick", x0 + tx * TILE, ty);
       blit(pm, grassTickTile(tileRng, forest > 0.3), tx * TILE, wy);
     }
@@ -600,7 +873,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   if (cfg.hasLake) {
     for (let lx = 0; lx < CHUNK_W; lx++) {
       const wx = x0 + lx;
-      if (regionAt(wx, seed) === REGION_CITY) continue;
+      if (inTown(wx, seed)) continue;
       const depth = lakeDepth(wx, seed);
       if (depth <= 0.02) continue;
       const surf = waterSurfaceY(wx, seed);
@@ -637,7 +910,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const lx = 8 + Math.floor(padRng() * (CHUNK_W - 16));
       const wx = x0 + lx;
       const frac = padRng();
-      if (regionAt(wx, seed) === REGION_CITY || lakeDepth(wx, seed) < 0.6) continue;
+      if (inTown(wx, seed) || lakeDepth(wx, seed) < 0.6) continue;
       const surf = waterSurfaceY(wx, seed);
       if (VIEW_H - surf < 16) continue;
       const cy = surf + 9 + Math.floor(frac * (VIEW_H - surf - 13));
@@ -660,329 +933,249 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   const fieldTop = HORIZON + 6;
   const fieldBottom = VIEW_H - 2;
 
-  if (cfg.hasBuildings) {
-    // buildings along the sidewalk above the road
-    const bRng = keyRng(seed, "city", k);
-    const n = 2 + Math.floor(bRng() * 3);
-    for (let i = 0; i < n; i++) {
-      const bx = 8 + Math.floor(bRng() * (CHUNK_W - BUILDING_W - 16));
-      const wx = x0 + bx + BUILDING_W / 2;
-      // the chunk-wide `region` picks the city *branch*, but ground color is
-      // a continuous blend — without this, a building could land on ground
-      // that's still rendering as grass near a chunk's edge. Check the
-      // actual local weight, not just the chunk's one midpoint sample.
-      if (regionWeights(wx, seed).urban < 0.55) continue;
-      const band = pathBand(wx, seed);
-      if (!band) continue;
-      const [pt] = band;
-      const by = pt - BUILDING_H - 10;
-      const r: Rect = { x: bx, y: by, w: BUILDING_W, h: BUILDING_H };
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      occupied.push(r);
-      const type = Math.floor(bRng() * 3);
-      const sprite = buildingPixmap(type, bRng);
+  // countryside decorations, kept clear of towns (and of the town-limits
+  // sign just outside each end)
+  const notUrbanAt = (wx: number) => townNear(wx, seed, 48) === null;
+
+  // trainer (route only), standing on the path
+  const trainerRng = keyRng(seed, "trainer", k);
+  if (cfg.hasTrainer && trainerRng() < 0.35) {
+    const variant = Math.floor(trainerRng() * 3);
+    const tx = 32 + Math.floor(trainerRng() * (CHUNK_W - 96));
+    const wx = x0 + tx + TRAINER_W / 2;
+    const base = Math.round(pathCenter(wx, seed));
+    const ty = base - TRAINER_H;
+    const band = pathBand(wx, seed);
+    const onPath = band !== null && band[1] - band[0] >= 20;
+    if (onPath && notUrbanAt(wx) && ty > HORIZON && base + 4 < VIEW_H) {
+      const r: Rect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
+      occupied.push({ x: tx, y: base - 8, w: TRAINER_W, h: 10 });
       drawables.push({
-        baseY: by + BUILDING_H,
+        baseY: base,
         bounds: r,
-        ground: () => pm.fillEllipse(bx + BUILDING_W / 2, by + BUILDING_H - 3, 34, 5, C.roadDark),
+        ground: () => pm.fillEllipse(tx + TRAINER_W / 2, ty + TRAINER_H - 2, 12, 3, C.pathDark),
+        draw: () => blit(pm, trainerPixmap(variant), tx, ty),
+      });
+    }
+  }
+
+  // trees: candidates scattered over the whole field, kept with a
+  // probability of (region density × local grove strength), so they
+  // gather into groves with clearings between rather than sitting on
+  // fixed rows. Only the trunk footprint needs clear ground — canopies
+  // may overlap each other and the path, sorted by depth. Trees lower on
+  // screen (nearer the viewer) are drawn a little larger.
+  const treeRng = keyRng(seed, "trees", k);
+  for (let i = 0; i < TREE_CANDIDATES; i++) {
+    const lx = Math.floor(treeRng() * CHUNK_W);
+    const baseY = fieldTop + Math.floor(treeRng() * (fieldBottom - fieldTop));
+    const roll = treeRng();
+    const sizeJitter = treeRng();
+    const near = (baseY - HORIZON) / (VIEW_H - HORIZON);
+    const density = cfg.treeDensityUpland + (cfg.treeDensityLowland - cfg.treeDensityUpland) * near;
+    if (roll >= density * groveAt(x0 + lx, baseY, seed)) continue;
+    const scale = (0.72 + near * 0.4) * (0.9 + sizeJitter * 0.2);
+    const w = Math.round(TREE_W * scale);
+    const x = Math.max(0, Math.min(CHUNK_W - w, lx - Math.round(w / 2)));
+    const y = baseY - Math.round(61 * scale);
+    const foot = treeFootprint(x + w / 2, baseY, scale);
+    if (!notUrbanAt(x0 + x + w / 2) || !groundFree(foot, x0, seed, occupied)) continue;
+    occupied.push(foot);
+    const kind = treeKindAt(x0 + x + w / 2, baseY, cfg.coniferShare, keyRng(seed, "treekind", x0 + x, y), seed);
+    const spec = treeSpec(keyRng(seed, "treespec", x0 + x, y), kind);
+    const baseRng = keyRng(seed, "treebase", x0 + x, y);
+    const spot: TreeSpot = { x: x0 + x, y, scale, spec, depth: 0 };
+    trees.push(spot);
+    drawables.push({
+      baseY,
+      bounds: groundedTreeBounds(x, y, scale),
+      ground: () => drawTreeShadow(pm, x, y, scale, baseRng),
+      draw: () => drawGroundedTree(pm, x, y, scale, spec, baseRng),
+      spot,
+    });
+  }
+
+  // berry tree: at most one, anywhere a trunk fits
+  if (cfg.hasBerryTree) {
+    const berryRng = keyRng(seed, "berry", k);
+    if (berryRng() < 0.3) {
+      const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
+      const baseY = fieldTop + Math.floor(berryRng() * (fieldBottom - fieldTop));
+      const by = baseY - 61;
+      const foot = treeFootprint(bx + TREE_W / 2, baseY, 1);
+      if (notUrbanAt(x0 + bx + TREE_W / 2) && by >= 0 && groundFree(foot, x0, seed, occupied)) {
+        occupied.push(foot);
+        const baseRng = keyRng(seed, "berrybase", k);
+        const spot: BerryTreeSpot = { x: x0 + bx, y: by, depth: 0 };
+        berryTrees.push(spot);
+        drawables.push({
+          baseY,
+          bounds: groundedTreeBounds(bx, by, 1),
+          ground: () => drawTreeShadow(pm, bx, by, 1, baseRng),
+          draw: () => {
+            blit(pm, berryTrunkPixmap(), bx, by);
+            drawTreeBaseClutter(pm, bx + TREE_W / 2, baseY + 1, 1, baseRng);
+          },
+          spot,
+        });
+      }
+    }
+  }
+
+  // berry bushes: favour grove edges, where undergrowth would be
+  if (cfg.hasBushes) {
+    const bushRng = keyRng(seed, "bush", k);
+    const bushes = 3 + Math.floor(bushRng() * 4);
+    for (let i = 0; i < bushes; i++) {
+      const bx = Math.floor(bushRng() * (CHUNK_W - 32));
+      const baseY = fieldTop + Math.floor(bushRng() * (fieldBottom - fieldTop));
+      const keep = bushRng() < 0.25 + 0.4 * Math.min(1, groveAt(x0 + bx + 16, baseY, seed));
+      if (!keep) continue;
+      const by = baseY - 29;
+      const foot: Rect = { x: bx + 4, y: baseY - 6, w: 24, h: 8 };
+      if (!notUrbanAt(x0 + bx + 16) || !groundFree(foot, x0, seed, occupied)) continue;
+      occupied.push(foot);
+      const sprite = berryBushPixmap(keyRng(seed, "bushtile", k, i));
+      drawables.push({
+        baseY,
+        bounds: { x: bx, y: by, w: 32, h: 32 },
+        ground: () => pm.fillEllipse(bx + 17, baseY, 12, 3, C.grassDark),
         draw: () => blit(pm, sprite, bx, by),
       });
     }
-  } else {
-    // route/forest decorations: same "chunk-wide branch picks the mode,
-    // but each candidate's own position must agree with the continuous
-    // ground blend" fix as the building placement above — otherwise a
-    // tree or fence post could land on ground that's locally rendering
-    // as pavement near a chunk that's close to a city.
-    const notUrbanAt = (wx: number) => regionWeights(wx, seed).urban < 0.4;
+  }
 
-    // trainer (route only), standing on the path
-    const trainerRng = keyRng(seed, "trainer", k);
-    if (cfg.hasTrainer && trainerRng() < 0.35) {
-      const variant = Math.floor(trainerRng() * 3);
-      const tx = 32 + Math.floor(trainerRng() * (CHUNK_W - 96));
-      const wx = x0 + tx + TRAINER_W / 2;
-      const base = Math.round(pathCenter(wx, seed));
-      const ty = base - TRAINER_H;
-      const band = pathBand(wx, seed);
-      const onPath = band !== null && band[1] - band[0] >= 20;
-      if (onPath && notUrbanAt(wx) && ty > HORIZON && base + 4 < VIEW_H) {
-        const r: Rect = { x: tx, y: ty, w: TRAINER_W, h: TRAINER_H };
-        occupied.push({ x: tx, y: base - 8, w: TRAINER_W, h: 10 });
+  // tall grass: irregular patches of 2–5 tufts scattered around a centre
+  // (staggered in x and y), not one or two tiles squared off on a band
+  if (cfg.hasTallGrass) {
+    const tallRng = keyRng(seed, "tall", k);
+    const patches = 2 + Math.floor(tallRng() * 3);
+    for (let i = 0; i < patches; i++) {
+      const cx = Math.floor(tallRng() * (CHUNK_W - TILE));
+      const cy = fieldTop + Math.floor(tallRng() * (fieldBottom - fieldTop - TILE));
+      const n = 2 + Math.floor(tallRng() * 4);
+      for (let t = 0; t < n; t++) {
+        const tx = Math.max(0, Math.min(CHUNK_W - TILE, cx + Math.round((tallRng() * 2 - 1) * TILE)));
+        const ty = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + Math.round((tallRng() * 2 - 1) * 12)));
+        const foot: Rect = { x: tx + 2, y: ty + 20, w: TILE - 4, h: 10 };
+        if (!notUrbanAt(x0 + tx + TILE / 2) || !groundFree(foot, x0, seed, occupied)) continue;
+        occupied.push(foot);
+        const spot: TallGrassSpot = { x: x0 + tx, y: ty, k, i, t, depth: 0 };
+        tallGrass.push(spot);
         drawables.push({
-          baseY: base,
-          bounds: r,
-          ground: () => pm.fillEllipse(tx + TRAINER_W / 2, ty + TRAINER_H - 2, 12, 3, C.pathDark),
-          draw: () => blit(pm, trainerPixmap(variant), tx, ty),
+          baseY: ty + 30,
+          bounds: { x: tx, y: ty, w: TILE, h: TILE },
+          spot,
         });
       }
     }
+  }
 
-    // trees: candidates scattered over the whole field, kept with a
-    // probability of (region density × local grove strength), so they
-    // gather into groves with clearings between rather than sitting on
-    // fixed rows. Only the trunk footprint needs clear ground — canopies
-    // may overlap each other and the path, sorted by depth. Trees lower on
-    // screen (nearer the viewer) are drawn a little larger.
-    const treeRng = keyRng(seed, "trees", k);
-    for (let i = 0; i < TREE_CANDIDATES; i++) {
-      const lx = Math.floor(treeRng() * CHUNK_W);
-      const baseY = fieldTop + Math.floor(treeRng() * (fieldBottom - fieldTop));
-      const roll = treeRng();
-      const sizeJitter = treeRng();
-      const near = (baseY - HORIZON) / (VIEW_H - HORIZON);
-      const density = cfg.treeDensityUpland + (cfg.treeDensityLowland - cfg.treeDensityUpland) * near;
-      if (roll >= density * groveAt(x0 + lx, baseY, seed)) continue;
-      const scale = (0.72 + near * 0.4) * (0.9 + sizeJitter * 0.2);
-      const w = Math.round(TREE_W * scale);
-      const x = Math.max(0, Math.min(CHUNK_W - w, lx - Math.round(w / 2)));
-      const y = baseY - Math.round(61 * scale);
-      const foot = treeFootprint(x + w / 2, baseY, scale);
-      if (!notUrbanAt(x0 + x + w / 2) || !groundFree(foot, x0, seed, occupied)) continue;
-      occupied.push(foot);
-      const kind = treeKindAt(x0 + x + w / 2, baseY, cfg.coniferShare, keyRng(seed, "treekind", x0 + x, y), seed);
-      const spec = treeSpec(keyRng(seed, "treespec", x0 + x, y), kind);
-      const baseRng = keyRng(seed, "treebase", x0 + x, y);
-      const spot: TreeSpot = { x: x0 + x, y, scale, spec, depth: 0 };
-      trees.push(spot);
-      drawables.push({
-        baseY,
-        bounds: groundedTreeBounds(x, y, scale),
-        ground: () => drawTreeShadow(pm, x, y, scale, baseRng),
-        draw: () => drawGroundedTree(pm, x, y, scale, spec, baseRng),
-        spot,
-      });
-    }
-
-    // berry tree: at most one, anywhere a trunk fits
-    if (cfg.hasBerryTree) {
-      const berryRng = keyRng(seed, "berry", k);
-      if (berryRng() < 0.3) {
-        const bx = 16 + Math.floor(berryRng() * (CHUNK_W - TREE_W - 32));
-        const baseY = fieldTop + Math.floor(berryRng() * (fieldBottom - fieldTop));
-        const by = baseY - 61;
-        const foot = treeFootprint(bx + TREE_W / 2, baseY, 1);
-        if (notUrbanAt(x0 + bx + TREE_W / 2) && by >= 0 && groundFree(foot, x0, seed, occupied)) {
-          occupied.push(foot);
-          const baseRng = keyRng(seed, "berrybase", k);
-          const spot: BerryTreeSpot = { x: x0 + bx, y: by, depth: 0 };
-          berryTrees.push(spot);
-          drawables.push({
-            baseY,
-            bounds: groundedTreeBounds(bx, by, 1),
-            ground: () => drawTreeShadow(pm, bx, by, 1, baseRng),
-            draw: () => {
-              blit(pm, berryTrunkPixmap(), bx, by);
-              drawTreeBaseClutter(pm, bx + TREE_W / 2, baseY + 1, 1, baseRng);
-            },
-            spot,
-          });
-        }
+  // flower clusters, preferring open ground away from groves
+  if (cfg.hasFlowers) {
+    const flowerRng = keyRng(seed, "flower", k);
+    const clusters = 2 + Math.floor(flowerRng() * 3);
+    for (let i = 0; i < clusters; i++) {
+      const cx = Math.floor(flowerRng() * CHUNK_W);
+      const cy = fieldTop + Math.floor(flowerRng() * (fieldBottom - fieldTop - TILE));
+      const n = 2 + Math.floor(flowerRng() * 3);
+      const open = groveAt(x0 + cx, cy, seed) < 1;
+      for (let f = 0; f < n; f++) {
+        const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
+        const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
+        if (!open) continue;
+        const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
+        if (!notUrbanAt(x0 + fx + TILE / 2) || !groundFree(r, x0, seed, occupied)) continue;
+        const sprite = flowerTile(keyRng(seed, "flowertile", k, i, f));
+        drawables.push({ baseY: fy + TILE - 2, bounds: r, draw: () => blit(pm, sprite, fx, fy) });
       }
     }
+  }
 
-    // berry bushes: favour grove edges, where undergrowth would be
-    if (cfg.hasBushes) {
-      const bushRng = keyRng(seed, "bush", k);
-      const bushes = 3 + Math.floor(bushRng() * 4);
-      for (let i = 0; i < bushes; i++) {
-        const bx = Math.floor(bushRng() * (CHUNK_W - 32));
-        const baseY = fieldTop + Math.floor(bushRng() * (fieldBottom - fieldTop));
-        const keep = bushRng() < 0.25 + 0.4 * Math.min(1, groveAt(x0 + bx + 16, baseY, seed));
-        if (!keep) continue;
-        const by = baseY - 29;
-        const foot: Rect = { x: bx + 4, y: baseY - 6, w: 24, h: 8 };
-        if (!notUrbanAt(x0 + bx + 16) || !groundFree(foot, x0, seed, occupied)) continue;
+  // ferns: forest-floor undergrowth, mostly in and around groves
+  if (cfg.undergrowth > 0) {
+    const fernRng = keyRng(seed, "fern", k);
+    const ferns = Math.round(cfg.undergrowth * (4 + fernRng() * 6));
+    for (let i = 0; i < ferns; i++) {
+      const fx = Math.floor(fernRng() * (CHUNK_W - FERN_W));
+      const baseY = fieldTop + Math.floor(fernRng() * (fieldBottom - fieldTop));
+      const g = (groveAt(x0 + fx + FERN_W / 2, baseY, seed) - 0.2) / 1.8;
+      if (fernRng() >= 0.2 + 0.7 * g) continue;
+      const foot: Rect = { x: fx + 4, y: baseY - 4, w: FERN_W - 8, h: 5 };
+      if (!notUrbanAt(x0 + fx + FERN_W / 2) || !groundFree(foot, x0, seed, occupied)) continue;
+      occupied.push(foot);
+      const by = baseY - FERN_H + 1;
+      const sprite = fernPixmap(keyRng(seed, "ferntile", k, i));
+      drawables.push({ baseY, bounds: { x: fx, y: by, w: FERN_W, h: FERN_H }, draw: () => blit(pm, sprite, fx, by) });
+    }
+
+    // a fallen log, now and then, lying in a grove
+    const logRng = keyRng(seed, "log", k);
+    if (logRng() < 0.5 * cfg.undergrowth) {
+      const w = 36 + Math.floor(logRng() * 16);
+      const lx = Math.floor(logRng() * (CHUNK_W - w));
+      const baseY = fieldTop + 4 + Math.floor(logRng() * (fieldBottom - fieldTop - 4));
+      const ly = baseY - LOG_H + 2;
+      const foot: Rect = { x: lx, y: baseY - 10, w, h: 12 };
+      if (notUrbanAt(x0 + lx + w / 2) && groundFree(foot, x0, seed, occupied)) {
         occupied.push(foot);
-        const sprite = berryBushPixmap(keyRng(seed, "bushtile", k, i));
+        const sprite = logPixmap(keyRng(seed, "logtile", k), w);
+        const clutterRng = keyRng(seed, "logbase", k);
         drawables.push({
           baseY,
-          bounds: { x: bx, y: by, w: 32, h: 32 },
-          ground: () => pm.fillEllipse(bx + 17, baseY, 12, 3, C.grassDark),
-          draw: () => blit(pm, sprite, bx, by),
+          bounds: { x: lx - 2, y: ly - 4, w: w + 4, h: LOG_H + 8 },
+          ground: () => pm.fillEllipse(lx + w / 2 + 2, baseY - 1, w / 2 + 2, 3, C.grassDark),
+          draw: () => {
+            blit(pm, sprite, lx, ly);
+            drawTreeBaseClutter(pm, lx + w / 2, baseY + 1, 0.8, clutterRng);
+          },
         });
       }
     }
+  }
 
-    // tall grass: irregular patches of 2–5 tufts scattered around a centre
-    // (staggered in x and y), not one or two tiles squared off on a band
-    if (cfg.hasTallGrass) {
-      const tallRng = keyRng(seed, "tall", k);
-      const patches = 2 + Math.floor(tallRng() * 3);
-      for (let i = 0; i < patches; i++) {
-        const cx = Math.floor(tallRng() * (CHUNK_W - TILE));
-        const cy = fieldTop + Math.floor(tallRng() * (fieldBottom - fieldTop - TILE));
-        const n = 2 + Math.floor(tallRng() * 4);
-        for (let t = 0; t < n; t++) {
-          const tx = Math.max(0, Math.min(CHUNK_W - TILE, cx + Math.round((tallRng() * 2 - 1) * TILE)));
-          const ty = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + Math.round((tallRng() * 2 - 1) * 12)));
-          const foot: Rect = { x: tx + 2, y: ty + 20, w: TILE - 4, h: 10 };
-          if (!notUrbanAt(x0 + tx + TILE / 2) || !groundFree(foot, x0, seed, occupied)) continue;
-          occupied.push(foot);
-          const spot: TallGrassSpot = { x: x0 + tx, y: ty, k, i, t, depth: 0 };
-          tallGrass.push(spot);
-          drawables.push({
-            baseY: ty + 30,
-            bounds: { x: tx, y: ty, w: TILE, h: TILE },
-            spot,
-          });
-        }
-      }
+  // reeds standing in the shallows along the lake shore
+  if (cfg.hasLake) {
+    const reedRng = keyRng(seed, "reeds", k);
+    for (let lx = 4 + Math.floor(reedRng() * 12); lx < CHUNK_W - REEDS_W; lx += 10 + Math.floor(reedRng() * 26)) {
+      const wx = x0 + lx + REEDS_W / 2;
+      const keep = reedRng() < 0.55;
+      const sink = 5 + Math.floor(reedRng() * 6);
+      if (!keep || inTown(wx, seed) || lakeDepth(wx, seed) < 0.3) continue;
+      const surf = waterSurfaceY(wx, seed);
+      const baseY = surf + sink;
+      if (baseY + 3 > VIEW_H) continue;
+      const ry = baseY - REEDS_H + 3;
+      const sprite = reedsPixmap(keyRng(seed, "reedtile", k, lx));
+      drawables.push({ baseY, bounds: { x: lx, y: ry, w: REEDS_W, h: REEDS_H }, draw: () => blit(pm, sprite, lx, ry) });
     }
+  }
 
-    // flower clusters, preferring open ground away from groves
-    if (cfg.hasFlowers) {
-      const flowerRng = keyRng(seed, "flower", k);
-      const clusters = 2 + Math.floor(flowerRng() * 3);
-      for (let i = 0; i < clusters; i++) {
-        const cx = Math.floor(flowerRng() * CHUNK_W);
-        const cy = fieldTop + Math.floor(flowerRng() * (fieldBottom - fieldTop - TILE));
-        const n = 2 + Math.floor(flowerRng() * 3);
-        const open = groveAt(x0 + cx, cy, seed) < 1;
-        for (let f = 0; f < n; f++) {
-          const fx = Math.max(0, Math.min(CHUNK_W - TILE, cx + (Math.floor(flowerRng() * 48) - 24)));
-          const fy = Math.max(HORIZON, Math.min(VIEW_H - TILE, cy + (Math.floor(flowerRng() * 32) - 16)));
-          if (!open) continue;
-          const r: Rect = { x: fx, y: fy, w: TILE, h: TILE };
-          if (!notUrbanAt(x0 + fx + TILE / 2) || !groundFree(r, x0, seed, occupied)) continue;
-          const sprite = flowerTile(keyRng(seed, "flowertile", k, i, f));
-          drawables.push({ baseY: fy + TILE - 2, bounds: r, draw: () => blit(pm, sprite, fx, fy) });
-        }
-      }
-    }
-
-    // ferns: forest-floor undergrowth, mostly in and around groves
-    if (cfg.undergrowth > 0) {
-      const fernRng = keyRng(seed, "fern", k);
-      const ferns = Math.round(cfg.undergrowth * (4 + fernRng() * 6));
-      for (let i = 0; i < ferns; i++) {
-        const fx = Math.floor(fernRng() * (CHUNK_W - FERN_W));
-        const baseY = fieldTop + Math.floor(fernRng() * (fieldBottom - fieldTop));
-        const g = (groveAt(x0 + fx + FERN_W / 2, baseY, seed) - 0.2) / 1.8;
-        if (fernRng() >= 0.2 + 0.7 * g) continue;
-        const foot: Rect = { x: fx + 4, y: baseY - 4, w: FERN_W - 8, h: 5 };
-        if (!notUrbanAt(x0 + fx + FERN_W / 2) || !groundFree(foot, x0, seed, occupied)) continue;
-        occupied.push(foot);
-        const by = baseY - FERN_H + 1;
-        const sprite = fernPixmap(keyRng(seed, "ferntile", k, i));
-        drawables.push({ baseY, bounds: { x: fx, y: by, w: FERN_W, h: FERN_H }, draw: () => blit(pm, sprite, fx, by) });
-      }
-
-      // a fallen log, now and then, lying in a grove
-      const logRng = keyRng(seed, "log", k);
-      if (logRng() < 0.5 * cfg.undergrowth) {
-        const w = 36 + Math.floor(logRng() * 16);
-        const lx = Math.floor(logRng() * (CHUNK_W - w));
-        const baseY = fieldTop + 4 + Math.floor(logRng() * (fieldBottom - fieldTop - 4));
-        const ly = baseY - LOG_H + 2;
-        const foot: Rect = { x: lx, y: baseY - 10, w, h: 12 };
-        if (notUrbanAt(x0 + lx + w / 2) && groundFree(foot, x0, seed, occupied)) {
-          occupied.push(foot);
-          const sprite = logPixmap(keyRng(seed, "logtile", k), w);
-          const clutterRng = keyRng(seed, "logbase", k);
-          drawables.push({
-            baseY,
-            bounds: { x: lx - 2, y: ly - 4, w: w + 4, h: LOG_H + 8 },
-            ground: () => pm.fillEllipse(lx + w / 2 + 2, baseY - 1, w / 2 + 2, 3, C.grassDark),
-            draw: () => {
-              blit(pm, sprite, lx, ly);
-              drawTreeBaseClutter(pm, lx + w / 2, baseY + 1, 0.8, clutterRng);
-            },
-          });
-        }
-      }
-    }
-
-    // reeds standing in the shallows along the lake shore
-    if (cfg.hasLake) {
-      const reedRng = keyRng(seed, "reeds", k);
-      for (let lx = 4 + Math.floor(reedRng() * 12); lx < CHUNK_W - REEDS_W; lx += 10 + Math.floor(reedRng() * 26)) {
-        const wx = x0 + lx + REEDS_W / 2;
-        const keep = reedRng() < 0.55;
-        const sink = 5 + Math.floor(reedRng() * 6);
-        if (!keep || regionAt(wx, seed) === REGION_CITY || lakeDepth(wx, seed) < 0.3) continue;
-        const surf = waterSurfaceY(wx, seed);
-        const baseY = surf + sink;
-        if (baseY + 3 > VIEW_H) continue;
-        const ry = baseY - REEDS_H + 3;
-        const sprite = reedsPixmap(keyRng(seed, "reedtile", k, lx));
-        drawables.push({ baseY, bounds: { x: lx, y: ry, w: REEDS_W, h: REEDS_H }, draw: () => blit(pm, sprite, lx, ry) });
-      }
-    }
-
-    // fence run (route only), along the near edge of the path
-    if (cfg.hasFence) {
-      const fenceRng = keyRng(seed, "fence", k);
-      if (fenceRng() < 0.4) {
-        const start = Math.floor(fenceRng() * 8) * TILE;
-        const segs = 4 + Math.floor(fenceRng() * 6);
-        for (let s = 0; s < segs; s++) {
-          const lx = start + s * TILE;
-          if (lx + TILE > CHUNK_W) break;
-          const wx = x0 + lx + 16;
-          const band = pathBand(wx, seed);
-          if (!band) continue;
-          const [, pb] = band;
-          const fy = pb + 8;
-          if (fy + TILE > VIEW_H) continue;
-          const r: Rect = { x: lx, y: fy, w: TILE, h: TILE };
-          if (!notUrbanAt(wx) || !groundFree(r, x0, seed, occupied)) continue;
-          occupied.push(r);
-          const sprite = fencePixmap(keyRng(seed, "ft", k, s));
-          drawables.push({ baseY: fy + 28, bounds: r, draw: () => blit(pm, sprite, lx, fy) });
-        }
+  // fence run (route only), along the near edge of the path
+  if (cfg.hasFence) {
+    const fenceRng = keyRng(seed, "fence", k);
+    if (fenceRng() < 0.4) {
+      const start = Math.floor(fenceRng() * 8) * TILE;
+      const segs = 4 + Math.floor(fenceRng() * 6);
+      for (let s = 0; s < segs; s++) {
+        const lx = start + s * TILE;
+        if (lx + TILE > CHUNK_W) break;
+        const wx = x0 + lx + 16;
+        const band = pathBand(wx, seed);
+        if (!band) continue;
+        const [, pb] = band;
+        const fy = pb + 8;
+        if (fy + TILE > VIEW_H) continue;
+        const r: Rect = { x: lx, y: fy, w: TILE, h: TILE };
+        if (!notUrbanAt(wx) || !groundFree(r, x0, seed, occupied)) continue;
+        occupied.push(r);
+        const sprite = fencePixmap(keyRng(seed, "ft", k, s));
+        drawables.push({ baseY: fy + 28, bounds: r, draw: () => blit(pm, sprite, lx, fy) });
       }
     }
   }
 
-  // city street furniture
-  if (cfg.hasStreetFurniture) {
-    const lampRng = keyRng(seed, "lamp", k);
-    const nLamps = 2 + Math.floor(lampRng() * 2);
-    for (let i = 0; i < nLamps; i++) {
-      const lx = 16 + Math.floor(lampRng() * (CHUNK_W - 48));
-      const wx = x0 + lx + 12;
-      const band = pathBand(wx, seed);
-      if (!band) continue;
-      const [, pb] = band;
-      const ly = pb + 2;
-      if (ly + 56 > VIEW_H) continue;
-      const sprite = streetlampPixmap(keyRng(seed, "lt", k, i));
-      drawables.push({ baseY: ly + 56, bounds: { x: lx, y: ly, w: 24, h: 56 }, draw: () => blit(pm, sprite, lx, ly) });
-    }
-
-    const benchRng = keyRng(seed, "bench", k);
-    const nBenches = Math.floor(benchRng() * 2);
-    for (let i = 0; i < nBenches; i++) {
-      const bx = 16 + Math.floor(benchRng() * (CHUNK_W - 72));
-      const wx = x0 + bx + 20;
-      const band = pathBand(wx, seed);
-      if (!band) continue;
-      const [pt] = band;
-      const by = pt - 20;
-      const r: Rect = { x: bx, y: by, w: 40, h: 20 };
-      if (by < HORIZON) continue;
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      const sprite = benchPixmap(keyRng(seed, "bt", k, i));
-      drawables.push({ baseY: by + 20, bounds: r, draw: () => blit(pm, sprite, bx, by) });
-    }
-
-    const fbRng = keyRng(seed, "flowerbed", k);
-    const nFb = 1 + Math.floor(fbRng() * 2);
-    for (let i = 0; i < nFb; i++) {
-      const fx = 16 + Math.floor(fbRng() * (CHUNK_W - 64));
-      const wx = x0 + fx + 16;
-      const band = pathBand(wx, seed);
-      if (!band) continue;
-      const [pt] = band;
-      const fy = pt - 16;
-      const r: Rect = { x: fx, y: fy, w: 32, h: 14 };
-      if (fy < HORIZON) continue;
-      if (!groundFree(r, x0, seed, occupied)) continue;
-      const sprite = flowerBedPixmap(keyRng(seed, "fbt", k, i));
-      drawables.push({ baseY: fy + 14, bounds: r, draw: () => blit(pm, sprite, fx, fy) });
-    }
-  }
+  placeTown(pm, x0, seed, drawables, trees);
 
   const depth = drawSorted(pm, drawables);
 
