@@ -3,6 +3,7 @@ import { SKY, RGBA32, C } from "../core/palette";
 import { ditherPick } from "../core/dither";
 import { noise2i, hashString, keyRng } from "../core/prng";
 import { tallGrassTile, TILE } from "../sprites/tiles";
+import { CloudSky } from "./clouds";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
   generateChunk,
@@ -72,6 +73,7 @@ const PARALLAX = 1.5;
 export class Renderer {
   private chunks = new Map<number, ChunkResult>();
   private fgChunks = new Map<number, ForegroundResult>();
+  private clouds: CloudSky;
   private fb = new Pixmap(1, VIEW_H);
   private off: HTMLCanvasElement;
   private offctx: CanvasRenderingContext2D;
@@ -90,12 +92,14 @@ export class Renderer {
     const offctx = this.off.getContext("2d");
     if (!offctx) throw new Error("2D canvas context unavailable");
     this.offctx = offctx;
+    this.clouds = new CloudSky(seed);
   }
 
   setSeed(seed: string): void {
     this.seed = seed;
     this.chunks.clear();
     this.fgChunks.clear();
+    this.clouds = new CloudSky(seed);
   }
 
   resize(logicalWidth: number): void {
@@ -118,6 +122,9 @@ export class Renderer {
         fb.data[y * fb.w + x] = ditherPick(a, b, frac, x, y);
       }
     }
+
+    // clouds, before the terrain so low ones sink behind the hills
+    this.clouds.draw(fb, scrollX, time);
 
     // chunks
     const first = Math.floor(scrollX / CHUNK_W);

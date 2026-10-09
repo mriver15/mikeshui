@@ -402,25 +402,6 @@ export function berryBushPixmap(rng: RNG): Pixmap {
   return p;
 }
 
-/** A puffy flat-bottomed cloud with a soft under-shadow. */
-export function cloudPixmap(rng: RNG): Pixmap {
-  const w = 80 + Math.floor(rng() * 40);
-  const h = 30 + Math.floor(rng() * 16);
-  const p = new Pixmap(w, h);
-  const cy = Math.floor(h * 0.5);
-  const blobs: Array<[number, number, number]> = [];
-  let x = 12;
-  while (x < w - 8) {
-    const r = 10 + Math.floor(rng() * 8);
-    blobs.push([x, cy, r]);
-    x += Math.max(8, r - 2);
-  }
-  for (const [bx, by, br] of blobs) p.fillCircle(bx, by + 4, br, C.cloudShade);
-  for (const [bx, by, br] of blobs) p.fillCircle(bx, by, br, C.cloud);
-  for (let i = 0; i < w; i++) p.set(i, cy + 8, C.cloudShade);
-  return p;
-}
-
 /** A horizontal wooden rail fence segment, with an occasional knot mark for variety. */
 export function fencePixmap(rng: RNG): Pixmap {
   const p = new Pixmap(32, 32);

@@ -35,15 +35,6 @@ canvas.view:active {
   cursor: grabbing;
 }
 
-canvas.overlay {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  pointer-events: none;
-}
-
 .ui {
   position: absolute;
   inset: 0;

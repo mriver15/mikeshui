@@ -136,7 +136,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
   // the number), then update GOLDEN_HASH below to the printed "received" value.
   const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
   const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
-  const GOLDEN_HASH = "33346e9528a6fe3baaca79b01fe281f15ed8b10b7b7dd541a4b6620cc261f257";
+  const GOLDEN_HASH = "b38b07609e434d6f9febf7e45650fe64fc5b4004996560623f5dbcb5593a0644";
 
   it("matches the recorded golden hash", () => {
     const hash = createHash("sha256");

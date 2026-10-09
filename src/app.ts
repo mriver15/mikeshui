@@ -1,5 +1,4 @@
 import { Renderer } from "./world/renderer";
-import { SkyDynamics } from "./dynamics/sky";
 import { VIEW_H } from "./world/worldgen";
 
 interface AppState {
@@ -22,10 +21,6 @@ export function boot(root: HTMLElement): void {
   canvas.className = "view";
   root.appendChild(canvas);
 
-  const overlay = document.createElement("canvas");
-  overlay.className = "overlay";
-  root.appendChild(overlay);
-
   const ui = document.createElement("div");
   ui.className = "ui";
   ui.innerHTML = `
@@ -44,7 +39,6 @@ export function boot(root: HTMLElement): void {
   root.appendChild(ui);
 
   const renderer = new Renderer(seed, canvas);
-  const dynamics = new SkyDynamics(overlay, seed);
   const state: AppState = {
     renderer,
     canvas,
@@ -54,10 +48,9 @@ export function boot(root: HTMLElement): void {
     seed,
   };
 
-  // Continuous render loop (drives the animated water shimmer).
+  // Continuous render loop (drives the water, sway and drifting clouds).
   const loop = (time: number) => {
     renderer.draw(state.scrollX, time);
-    dynamics.render(time);
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
@@ -68,11 +61,8 @@ export function boot(root: HTMLElement): void {
     const h = Math.max(1, Math.floor(window.innerHeight * dpr));
     canvas.width = w;
     canvas.height = h;
-    overlay.width = w;
-    overlay.height = h;
     state.logicalW = Math.max(VIEW_H, Math.round(VIEW_H * (w / h)));
     renderer.resize(state.logicalW);
-    dynamics.resize(state.logicalW);
   };
 
   const scrollBy = (dx: number) => {

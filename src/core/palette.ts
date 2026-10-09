@@ -22,6 +22,11 @@ const NAMED: Array<[string, RGBA]> = [
   ["black", hex("000000")],
   ["cloud", hex("ffffff")],
   ["cloudShade", hex("bdcde6")],
+  // a half-step between sunlit white and cloudShade, and the cool shadowed
+  // underside of a cumulus — so clouds can be shaded in bands like the
+  // tree puffs rather than as a flat white shape on a gray shadow
+  ["cloudMid", hex("e6eef8")],
+  ["cloudUnder", hex("a4bcdc")],
   // Mid-hill greens sit a step cooler/lighter than the foreground tree
   // greens below (rather than being the literal same color) — a cheap
   // atmospheric-perspective cue so the hill band reads as further away.
