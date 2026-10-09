@@ -156,6 +156,9 @@ export class Renderer {
       if (!isWaterAt(wx, this.seed)) continue;
       const surf = waterSurfaceY(wx, this.seed);
       for (let y = surf + 4; y < VIEW_H; y++) {
+        // only glint open water, not the lily pads and reeds baked on it
+        const here = fb.data[y * fb.w + x];
+        if (here !== C.water && here !== C.waterDark) continue;
         const n = noise2i(shimmerSeed, wx + drift, y);
         if (n < 0.05) fb.data[y * fb.w + x] = C.waterBright;
         else if (n > 0.93) fb.data[y * fb.w + x] = C.waterLight;

@@ -112,6 +112,16 @@ describe("generateChunk depth buffer", () => {
   });
 });
 
+describe("tree variety", () => {
+  it("grows both broadleaf and conifer trees across a stretch of world", () => {
+    const kinds = new Set<string>();
+    for (let k = 0; k < 40; k++) {
+      for (const spot of generateChunk("1790824785082", k).trees) kinds.add(spot.spec.kind);
+    }
+    expect(kinds).toEqual(new Set(["broadleaf", "conifer"]));
+  });
+});
+
 describe("generateChunk golden hash (refactor-safety net)", () => {
   // Locks in the exact rendered output across a spread of seeds and chunk
   // indices, as a sha256 digest. The point isn't the specific hash — it's
@@ -126,7 +136,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
   // the number), then update GOLDEN_HASH below to the printed "received" value.
   const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
   const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
-  const GOLDEN_HASH = "32c746ae7b6d5adf9c798c42c69061f59dbbcadce2810c0aa1520aaa1cf10e62";
+  const GOLDEN_HASH = "b3e666fb737c586d6cad2605f5e2c24dfdb1d4ff9602eaf895cc430ad5cc1d33";
 
   it("matches the recorded golden hash", () => {
     const hash = createHash("sha256");

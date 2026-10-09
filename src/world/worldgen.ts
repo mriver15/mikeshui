@@ -6,6 +6,16 @@ import { fbm1D, valueNoise2D } from "../core/perlin";
 import { flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
 import {
   treeTrunkPixmap,
+  fernPixmap,
+  logPixmap,
+  reedsPixmap,
+  drawLilyPad,
+  FERN_W,
+  FERN_H,
+  LOG_H,
+  REEDS_W,
+  REEDS_H,
+  type TreeKind,
   treeSpec,
   berryTrunkPixmap,
   drawTreeBaseClutter,
@@ -56,6 +66,10 @@ interface RegionConfig {
   hasTrainer: boolean;
   treeDensityUpland: number;
   treeDensityLowland: number;
+  /** Fraction of trees that are conifers, before the local pine-stand noise scales it. */
+  coniferShare: number;
+  /** Multiplier on forest-floor undergrowth: ferns and fallen logs. */
+  undergrowth: number;
   hasBerryTree: boolean;
   hasBushes: boolean;
   hasTallGrass: boolean;
@@ -72,6 +86,8 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
     hasTrainer: true,
     treeDensityUpland: 0.3,
     treeDensityLowland: 0.22,
+    coniferShare: 0.12,
+    undergrowth: 0.35,
     hasBerryTree: true,
     hasBushes: true,
     hasTallGrass: true,
@@ -86,6 +102,8 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
     hasTrainer: false,
     treeDensityUpland: 0.55,
     treeDensityLowland: 0.4,
+    coniferShare: 0.45,
+    undergrowth: 1,
     hasBerryTree: true,
     hasBushes: true,
     hasTallGrass: true,
@@ -100,6 +118,8 @@ const REGION_CONFIGS: Record<number, RegionConfig> = {
     hasTrainer: false,
     treeDensityUpland: 0,
     treeDensityLowland: 0,
+    coniferShare: 0,
+    undergrowth: 0,
     hasBerryTree: false,
     hasBushes: false,
     hasTallGrass: false,
@@ -323,6 +343,18 @@ function groveAt(wx: number, y: number, seed: string): number {
   }
   const n = valueNoise2D(wx / 110, y / 48, groveSeed);
   return 0.2 + 1.8 * smoothstep(0.4, 0.78, n);
+}
+
+/**
+ * Broadleaf or conifer for a tree at (wx, y). Conifers come in stands —
+ * a slow 2-D noise scales the region's base share up to ~1.7× in some
+ * stretches and down to ~0.3× in others — rather than being sprinkled
+ * evenly through every grove.
+ */
+function treeKindAt(wx: number, y: number, share: number, rng: () => number, seed: string): TreeKind {
+  const stand = valueNoise2D(wx / 240, y / 90, hashString(seed + ":pines"));
+  const local = share * (0.3 + 1.4 * smoothstep(0.35, 0.7, stand));
+  return rng() < local ? "conifer" : "broadleaf";
 }
 
 /** The patch of ground a tree's trunk and roots take up: what must be clear of the path, water and other trunks. */
@@ -582,12 +614,34 @@ export function generateChunk(seed: string, k: number): ChunkResult {
         const wc = n < 0.05 ? C.waterDark : C.water;
         pm.set(lx, y, edge < 1 ? ditherPick(wc, pm.get(lx, y), 1 - edge, wx, y) : wc);
       }
+      // shore: a sandy bank whose width wanders (rising 0–3px up into the
+      // grass above the waterline), edged by a dark grass lip, flecked
+      // with pebbles, then a band of wet sand and a bright foam line
       if (edge > 0.5) {
-        pm.set(lx, surf, C.shore);
-        pm.set(lx, surf + 1, C.shore);
+        const rise = Math.max(0, Math.round(fbm1D(wx / 14, seed + ":beach", 2) * 5) - 1);
+        const sandTop = surf - rise;
+        pm.set(lx, sandTop - 1, C.grassDark);
+        for (let y = sandTop; y <= surf + 1; y++) {
+          const n = noise2i(waterSeed, wx, y + 9999);
+          pm.set(lx, y, n < 0.05 ? C.roadDark : n > 0.96 ? C.pathLight : C.shore);
+        }
         pm.set(lx, surf + 2, C.pathDark);
         pm.set(lx, surf + 3, C.waterBright);
       }
+    }
+
+    // lily pads drifting on the open water (not in the tapering shallows)
+    const padRng = keyRng(seed, "lilypad", k);
+    const pads = Math.floor(padRng() * 6);
+    for (let i = 0; i < pads; i++) {
+      const lx = 8 + Math.floor(padRng() * (CHUNK_W - 16));
+      const wx = x0 + lx;
+      const frac = padRng();
+      if (regionAt(wx, seed) === REGION_CITY || lakeDepth(wx, seed) < 0.6) continue;
+      const surf = waterSurfaceY(wx, seed);
+      if (VIEW_H - surf < 16) continue;
+      const cy = surf + 9 + Math.floor(frac * (VIEW_H - surf - 13));
+      drawLilyPad(pm, lx, cy, padRng, C.water);
     }
   }
 
@@ -686,7 +740,8 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const foot = treeFootprint(x + w / 2, baseY, scale);
       if (!notUrbanAt(x0 + x + w / 2) || !groundFree(foot, x0, seed, occupied)) continue;
       occupied.push(foot);
-      const spec = treeSpec(keyRng(seed, "treespec", x0 + x, y));
+      const kind = treeKindAt(x0 + x + w / 2, baseY, cfg.coniferShare, keyRng(seed, "treekind", x0 + x, y), seed);
+      const spec = treeSpec(keyRng(seed, "treespec", x0 + x, y), kind);
       const baseRng = keyRng(seed, "treebase", x0 + x, y);
       const spot: TreeSpot = { x: x0 + x, y, scale, spec, depth: 0 };
       trees.push(spot);
@@ -796,6 +851,65 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       }
     }
 
+    // ferns: forest-floor undergrowth, mostly in and around groves
+    if (cfg.undergrowth > 0) {
+      const fernRng = keyRng(seed, "fern", k);
+      const ferns = Math.round(cfg.undergrowth * (4 + fernRng() * 6));
+      for (let i = 0; i < ferns; i++) {
+        const fx = Math.floor(fernRng() * (CHUNK_W - FERN_W));
+        const baseY = fieldTop + Math.floor(fernRng() * (fieldBottom - fieldTop));
+        const g = (groveAt(x0 + fx + FERN_W / 2, baseY, seed) - 0.2) / 1.8;
+        if (fernRng() >= 0.2 + 0.7 * g) continue;
+        const foot: Rect = { x: fx + 4, y: baseY - 4, w: FERN_W - 8, h: 5 };
+        if (!notUrbanAt(x0 + fx + FERN_W / 2) || !groundFree(foot, x0, seed, occupied)) continue;
+        occupied.push(foot);
+        const by = baseY - FERN_H + 1;
+        const sprite = fernPixmap(keyRng(seed, "ferntile", k, i));
+        drawables.push({ baseY, bounds: { x: fx, y: by, w: FERN_W, h: FERN_H }, draw: () => blit(pm, sprite, fx, by) });
+      }
+
+      // a fallen log, now and then, lying in a grove
+      const logRng = keyRng(seed, "log", k);
+      if (logRng() < 0.5 * cfg.undergrowth) {
+        const w = 36 + Math.floor(logRng() * 16);
+        const lx = Math.floor(logRng() * (CHUNK_W - w));
+        const baseY = fieldTop + 4 + Math.floor(logRng() * (fieldBottom - fieldTop - 4));
+        const ly = baseY - LOG_H + 2;
+        const foot: Rect = { x: lx, y: baseY - 10, w, h: 12 };
+        if (notUrbanAt(x0 + lx + w / 2) && groundFree(foot, x0, seed, occupied)) {
+          occupied.push(foot);
+          const sprite = logPixmap(keyRng(seed, "logtile", k), w);
+          const clutterRng = keyRng(seed, "logbase", k);
+          drawables.push({
+            baseY,
+            bounds: { x: lx - 2, y: ly - 4, w: w + 4, h: LOG_H + 8 },
+            ground: () => pm.fillEllipse(lx + w / 2 + 2, baseY - 1, w / 2 + 2, 3, C.grassDark),
+            draw: () => {
+              blit(pm, sprite, lx, ly);
+              drawTreeBaseClutter(pm, lx + w / 2, baseY + 1, 0.8, clutterRng);
+            },
+          });
+        }
+      }
+    }
+
+    // reeds standing in the shallows along the lake shore
+    if (cfg.hasLake) {
+      const reedRng = keyRng(seed, "reeds", k);
+      for (let lx = 4 + Math.floor(reedRng() * 12); lx < CHUNK_W - REEDS_W; lx += 10 + Math.floor(reedRng() * 26)) {
+        const wx = x0 + lx + REEDS_W / 2;
+        const keep = reedRng() < 0.55;
+        const sink = 5 + Math.floor(reedRng() * 6);
+        if (!keep || regionAt(wx, seed) === REGION_CITY || lakeDepth(wx, seed) < 0.3) continue;
+        const surf = waterSurfaceY(wx, seed);
+        const baseY = surf + sink;
+        if (baseY + 3 > VIEW_H) continue;
+        const ry = baseY - REEDS_H + 3;
+        const sprite = reedsPixmap(keyRng(seed, "reedtile", k, lx));
+        drawables.push({ baseY, bounds: { x: lx, y: ry, w: REEDS_W, h: REEDS_H }, draw: () => blit(pm, sprite, lx, ry) });
+      }
+    }
+
     // fence run (route only), along the near edge of the path
     if (cfg.hasFence) {
       const fenceRng = keyRng(seed, "fence", k);
@@ -887,6 +1001,22 @@ export interface ForegroundResult {
   trees: TreeSpot[];
 }
 
+/**
+ * A low grassy knoll along the bottom edge for a foreground object to
+ * stand on. The foreground scrolls at a different rate from the world, so
+ * where it will pass over a lake can't be known when it's generated —
+ * giving each near object its own patch of bank means it reads as the
+ * near shore in front of the water rather than a tree planted in it.
+ */
+function drawNearBank(pm: Pixmap, cx: number, halfW: number): void {
+  pm.fillEllipse(cx, VIEW_H + 3, halfW + 1, 12, C.grassDark);
+  pm.fillEllipse(cx, VIEW_H + 4, halfW, 11, C.grass);
+  for (let x = Math.round(cx - halfW * 0.7); x < cx + halfW * 0.7; x += 3) {
+    const dx = (x - cx) / halfW;
+    pm.set(x, Math.round(VIEW_H + 4 - 11 * Math.sqrt(1 - dx * dx)) + 1, C.grassLight);
+  }
+}
+
 export function generateForeground(seed: string, k: number): ForegroundResult {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
   const trees: TreeSpot[] = [];
@@ -901,14 +1031,19 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
     if (overWater(k * CHUNK_W + tx, w, seed)) continue;
     // sunk just far enough that the root tips run off the bottom edge
     const ty = VIEW_H - h + Math.round(2 * scale);
-    const spec = treeSpec(keyRng(seed, "fgspec", k, i));
+    const fgForest = regionWeights(k * CHUNK_W + tx + w / 2, seed).forest;
+    const kind: TreeKind = keyRng(seed, "fgkind", k, i)() < 0.3 * fgForest ? "conifer" : "broadleaf";
+    const spec = treeSpec(keyRng(seed, "fgspec", k, i), kind);
     const baseRng = keyRng(seed, "fgbase", k, i);
     const spot: TreeSpot = { x: k * CHUNK_W + tx, y: ty, scale, spec, depth: 0 };
     trees.push(spot);
     drawables.push({
       baseY: ty + Math.round(61 * scale),
       bounds: groundedTreeBounds(tx, ty, scale),
-      ground: () => drawTreeShadow(pm, tx, ty, scale, baseRng),
+      ground: () => {
+        drawNearBank(pm, tx + w / 2, w * 0.42);
+        drawTreeShadow(pm, tx, ty, scale, baseRng);
+      },
       draw: () => drawGroundedTree(pm, tx, ty, scale, spec, baseRng),
       spot,
     });
@@ -922,7 +1057,10 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
       drawables.push({
         baseY: VIEW_H,
         bounds: { x: tx, y: by, w, h: VIEW_H - by },
-        ground: () => pm.fillEllipse(tx + w / 2, VIEW_H - 5, w * 0.4, 4, C.grassDark),
+        ground: () => {
+          drawNearBank(pm, tx + w / 2, w * 0.6);
+          pm.fillEllipse(tx + w / 2, VIEW_H - 5, w * 0.4, 4, C.grassDark);
+        },
         draw: () => blitScaled(pm, berryBushPixmap(keyRng(seed, "fgb", k)), tx, by, scale),
       });
     }
