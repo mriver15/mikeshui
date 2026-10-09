@@ -1,15 +1,14 @@
 import { Pixmap, blit } from "../core/pixmap";
-import { SKY, RGBA32, C } from "../core/palette";
+import { SKY, RGBA32 } from "../core/palette";
 import { ditherPick } from "../core/dither";
-import { noise2i, hashString, keyRng } from "../core/prng";
+import { keyRng } from "../core/prng";
 import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
+import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
   generateChunk,
   generateForeground,
-  isWaterAt,
-  waterSurfaceY,
   CHUNK_W,
   VIEW_H,
   HORIZON,
@@ -63,7 +62,11 @@ function blitBehind(
   }
 }
 
-const MAX_CACHED_CHUNKS = 512;
+/**
+ * Each cached chunk holds a pixmap plus a 16-bit depth buffer (~0.5 MB
+ * together), so keep a few screens' worth either side, not hundreds.
+ */
+const MAX_CACHED_CHUNKS = 64;
 const PARALLAX = 1.5;
 
 /**
@@ -133,10 +136,12 @@ export class Renderer {
       blit(fb, this.getChunk(k).pixmap, k * CHUNK_W - scrollX, 0);
     }
 
-    // animated water shimmer, tall-grass sway, and tree-canopy sway — all
-    // before the foreground goes on top, so none of them can paint over it
-    this.shimmer(scrollX, time);
-    this.drawAnimated(this.chunkRange(first, last, (k) => this.getChunk(k)), scrollX, time);
+    // tall-grass and tree-canopy sway, then the animated water (after the
+    // canopies, so it can reflect them) — all before the foreground goes
+    // on top, so none of them can paint over it
+    const visible = this.chunkRange(first, last, (k) => this.getChunk(k));
+    this.drawAnimated(visible, scrollX, time);
+    drawWaterEffects(fb, visible.map(({ k, chunk }) => ({ k, water: chunk.water })), scrollX, time, this.seed);
 
     // foreground (parallax: scrolls faster, drawn last)
     const fgScroll = Math.round(scrollX * PARALLAX);
@@ -148,29 +153,6 @@ export class Renderer {
     this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time);
 
     this.present();
-  }
-
-  private shimmer(scrollX: number, time: number): void {
-    const fb = this.fb;
-    const shimmerSeed = hashString(this.seed + ":shimmer");
-    // Oscillate rather than scroll monotonically — a still lake's glints
-    // swing back and forth with the ripples, they don't drift off to one
-    // side forever like a river current. A slow swing plus a faster, smaller
-    // wobble layered on top gives it some life rather than a flat metronome.
-    const drift = Math.round(Math.sin(time / 1400) * 16 + Math.sin(time / 340) * 5);
-    for (let x = 0; x < fb.w; x++) {
-      const wx = scrollX + x;
-      if (!isWaterAt(wx, this.seed)) continue;
-      const surf = waterSurfaceY(wx, this.seed);
-      for (let y = surf + 4; y < VIEW_H; y++) {
-        // only glint open water, not the lily pads and reeds baked on it
-        const here = fb.data[y * fb.w + x];
-        if (here !== C.water && here !== C.waterDark) continue;
-        const n = noise2i(shimmerSeed, wx + drift, y);
-        if (n < 0.05) fb.data[y * fb.w + x] = C.waterBright;
-        else if (n > 0.93) fb.data[y * fb.w + x] = C.waterLight;
-      }
-    }
   }
 
   /**

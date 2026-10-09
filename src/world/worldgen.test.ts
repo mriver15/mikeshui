@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createHash } from "crypto";
-import { generateChunk, generateForeground, CHUNK_W, VIEW_H } from "./worldgen";
+import { generateChunk, generateForeground, CHUNK_W, VIEW_H, HORIZON } from "./worldgen";
+import { C } from "../core/palette";
 
 const SEEDS = ["1790824785082", "42", "0", "-5", "hello world", "", "💥"];
 // Chunk indices spanning both directions and a few multiples of the city/
@@ -122,6 +123,37 @@ describe("tree variety", () => {
   });
 });
 
+describe("water", () => {
+  it("records in-bounds water spans that are, overall, water", () => {
+    // individual spans can be partly hidden — reeds in the shallows, a
+    // bush on a pond's near bank standing in front of it — so this checks
+    // the spans in aggregate rather than one by one
+    const waterColors = new Set([C.water, C.waterLight, C.waterDark]);
+    let total = 0;
+    let wet = 0;
+    for (const seed of ["1790824785082", "42", "emerald"]) {
+      for (let k = 0; k < 24; k++) {
+        const { pixmap, water } = generateChunk(seed, k);
+        expect(water).toHaveLength(CHUNK_W);
+        water.forEach((col, lx) => {
+          for (const [top, bottom] of col) {
+            expect(top).toBeGreaterThan(HORIZON);
+            expect(bottom).toBeLessThan(VIEW_H);
+            expect(top).toBeLessThanOrEqual(bottom);
+            for (let y = top; y <= bottom; y++) {
+              total++;
+              if (waterColors.has(pixmap.get(lx, y))) wet++;
+            }
+          }
+        });
+      }
+    }
+    expect(total).toBeGreaterThan(0);
+    expect(wet / total).toBeGreaterThan(0.9);
+  });
+
+});
+
 describe("generateChunk golden hash (refactor-safety net)", () => {
   // Locks in the exact rendered output across a spread of seeds and chunk
   // indices, as a sha256 digest. The point isn't the specific hash — it's
@@ -136,7 +168,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
   // the number), then update GOLDEN_HASH below to the printed "received" value.
   const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
   const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
-  const GOLDEN_HASH = "b38b07609e434d6f9febf7e45650fe64fc5b4004996560623f5dbcb5593a0644";
+  const GOLDEN_HASH = "2f018619f4bb8e7f74a236cb9b39cc9e0ef062e55186906827e1493e18b3523c";
 
   it("matches the recorded golden hash", () => {
     const hash = createHash("sha256");

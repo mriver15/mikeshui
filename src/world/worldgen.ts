@@ -1,7 +1,7 @@
 import { Pixmap, blit, blitScaled } from "../core/pixmap";
 import { C } from "../core/palette";
 import { keyRng, noise2i, hashString } from "../core/prng";
-import { ditherPick, smoothstep } from "../core/dither";
+import { smoothstep } from "../core/dither";
 import { fbm1D, valueNoise2D } from "../core/perlin";
 import { flowerTile, grassTickTile, pathTickTile, TILE } from "../sprites/tiles";
 import {
@@ -41,6 +41,7 @@ import {
   SIGN_W,
   LAMP_W,
 } from "../sprites/town";
+import { paintWaterColumn, paintShoreColumn, pondRows, type Pond, type WaterSpan } from "./water";
 import { findTown, ROAD_HALF, STREET_HALF, type Town, type Lot } from "./town";
 
 export const VIEW_H = 320;
@@ -80,6 +81,8 @@ interface RegionConfig {
   coniferShare: number;
   /** Multiplier on forest-floor undergrowth: ferns and fallen logs. */
   undergrowth: number;
+  /** Chance a chunk has a small pond out in the field. */
+  pondChance: number;
   hasBerryTree: boolean;
   hasBushes: boolean;
   hasTallGrass: boolean;
@@ -96,6 +99,7 @@ const REGION_CONFIGS: Record<typeof REGION_ROUTE | typeof REGION_FOREST, RegionC
     treeDensityLowland: 0.22,
     coniferShare: 0.12,
     undergrowth: 0.35,
+    pondChance: 0.2,
     hasBerryTree: true,
     hasBushes: true,
     hasTallGrass: true,
@@ -110,6 +114,7 @@ const REGION_CONFIGS: Record<typeof REGION_ROUTE | typeof REGION_FOREST, RegionC
     treeDensityLowland: 0.4,
     coniferShare: 0.45,
     undergrowth: 1,
+    pondChance: 0.3,
     hasBerryTree: true,
     hasBushes: true,
     hasTallGrass: true,
@@ -231,18 +236,13 @@ function overWater(x0: number, w: number, seed: string): boolean {
   return false;
 }
 
-/** Whether a world-x column is open lake water (for the animated shimmer). */
-export function isWaterAt(x: number, seed: string): boolean {
-  return !inTown(x, seed) && inLake(x, seed);
-}
-
 /**
  * Lake surface y for a world-x column. Tapers toward the bottom of the
  * screen (vanishingly thin water) as the shore approaches, matching the
  * `lakeDepth` ramp used to fill it, so start/end edges blend rather than
  * cutting off as a flat-walled block.
  */
-export function waterSurfaceY(x: number, seed: string): number {
+function waterSurfaceY(x: number, seed: string): number {
   const depth = lakeDepth(x, seed);
   const base = LAKE_TOP + Math.sin(x * 0.06) * 4;
   return Math.round(base + (1 - depth) * (VIEW_H - base));
@@ -290,6 +290,11 @@ export interface BerryTreeSpot {
 
 export interface ChunkResult {
   pixmap: Pixmap;
+  /**
+   * Open water per column (index = chunk-local x): lake and pond spans,
+   * for the renderer's per-frame reflections, ripples and foam.
+   */
+  water: WaterSpan[][];
   /**
    * Per-pixel draw-order depth, same size as `pixmap`: 0 for ground, else
    * the 1-based sort index of the object that last painted that pixel.
@@ -869,38 +874,36 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
-  // lake (bottom water, non-city only)
+  // lake (bottom water, non-city only): a sandy shore that follows the
+  // waterline all the way round — down the steep sides where the lake
+  // tapers off, rather than dithering into the grass — then open water
+  // banded shallow to deep. Animated detail (reflections, ripples, foam)
+  // is the renderer's, over the spans recorded here.
+  const water: WaterSpan[][] = Array.from({ length: CHUNK_W }, () => []);
+  const toneSeed = hashString(seed + ":watertone");
+  const lakeSurf = (lx: number): number => {
+    const wx = x0 + lx;
+    if (!cfg.hasLake || inTown(wx, seed) || lakeDepth(wx, seed) <= 0.02) return VIEW_H;
+    return waterSurfaceY(wx, seed);
+  };
   if (cfg.hasLake) {
+    let prev = lakeSurf(-1);
+    let cur = lakeSurf(0);
     for (let lx = 0; lx < CHUNK_W; lx++) {
+      const next = lakeSurf(lx + 1);
       const wx = x0 + lx;
-      if (inTown(wx, seed)) continue;
-      const depth = lakeDepth(wx, seed);
-      if (depth <= 0.02) continue;
-      const surf = waterSurfaceY(wx, seed);
-      if (surf >= VIEW_H) continue;
-      // fade the shoreline in/out over the last stretch of taper (rather
-      // than a hard edge) by dithering water against the grass already
-      // painted there
-      const edge = smoothstep(0.02, 0.35, depth);
-      for (let y = surf; y < VIEW_H; y++) {
-        const n = noise2i(waterSeed, wx, y);
-        const wc = n < 0.05 ? C.waterDark : C.water;
-        pm.set(lx, y, edge < 1 ? ditherPick(wc, pm.get(lx, y), 1 - edge, wx, y) : wc);
-      }
-      // shore: a sandy bank whose width wanders (rising 0–3px up into the
-      // grass above the waterline), edged by a dark grass lip, flecked
-      // with pebbles, then a band of wet sand and a bright foam line
-      if (edge > 0.5) {
+      const lowestNeighbour = Math.min(prev, next);
+      if (cur < VIEW_H || lowestNeighbour < VIEW_H) {
         const rise = Math.max(0, Math.round(fbm1D(wx / 14, seed + ":beach", 2) * 5) - 1);
-        const sandTop = surf - rise;
-        pm.set(lx, sandTop - 1, C.grassDark);
-        for (let y = sandTop; y <= surf + 1; y++) {
-          const n = noise2i(waterSeed, wx, y + 9999);
-          pm.set(lx, y, n < 0.05 ? C.roadDark : n > 0.96 ? C.pathLight : C.shore);
+        const waterTop = Math.min(cur + 3, VIEW_H);
+        paintShoreColumn(pm, lx, wx, Math.min(cur, lowestNeighbour) - rise, waterTop, waterSeed);
+        if (waterTop < VIEW_H) {
+          paintWaterColumn(pm, lx, wx, waterTop, VIEW_H - 1, toneSeed);
+          water[lx].push([waterTop, VIEW_H - 1]);
         }
-        pm.set(lx, surf + 2, C.pathDark);
-        pm.set(lx, surf + 3, C.waterBright);
       }
+      prev = cur;
+      cur = next;
     }
 
     // lily pads drifting on the open water (not in the tapering shallows)
@@ -918,6 +921,56 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
+  // a pond out in the field, now and then: same shore and banding as the
+  // lake, plus a grassy near bank, kept wholly inside the chunk and clear
+  // of the path, towns and the lake
+  const ponds: Pond[] = [];
+  const pondRng = keyRng(seed, "pond", k);
+  if (pondRng() < cfg.pondChance) {
+    for (let attempt = 0; attempt < 3 && ponds.length === 0; attempt++) {
+      const rx = 30 + pondRng() * 34;
+      const ry = 9 + pondRng() * 9;
+      const cx = rx + 8 + pondRng() * (CHUNK_W - 2 * rx - 16);
+      const cy = HORIZON + 26 + ry + pondRng() * (LAKE_TOP - 24 - ry - (HORIZON + 26 + ry));
+      const pond: Pond = { cx, cy, rx, ry, seed: hashString(`${seed}:pond:${k}:${attempt}`) };
+      let ok = true;
+      for (let lx = Math.floor(cx - rx); lx <= cx + rx && ok; lx += 6) {
+        const wx = x0 + lx;
+        const band = pathBand(wx, seed);
+        if (band && band[0] < cy + ry + 8 && band[1] > cy - ry - 8) ok = false;
+        if (townNear(wx, seed, 48)) ok = false;
+        if (lakeSurf(lx) < cy + ry + 14) ok = false;
+      }
+      if (ok) ponds.push(pond);
+    }
+  }
+  for (const pond of ponds) {
+    const rows = (lx: number) => pondRows(pond, lx);
+    for (let lx = Math.floor(pond.cx - pond.rx) - 1; lx <= pond.cx + pond.rx + 1; lx++) {
+      const wx = x0 + lx;
+      const here = rows(lx);
+      const neighbours = [rows(lx - 1), rows(lx + 1)].filter((r): r is [number, number] => r !== null);
+      if (!here && neighbours.length === 0) continue;
+      const top = here ? here[0] : Math.min(...neighbours.map((r) => r[1]));
+      const farTop = Math.min(top, ...neighbours.map((r) => r[0]));
+      const waterTop = here ? here[0] + 2 : top;
+      paintShoreColumn(pm, lx, wx, farTop - 1, waterTop, waterSeed);
+      if (!here) continue;
+      const bottom = here[1];
+      if (waterTop < bottom) {
+        paintWaterColumn(pm, lx, wx, waterTop, bottom - 1, toneSeed, true);
+        water[lx].push([waterTop, bottom - 1]);
+      }
+      pm.set(lx, bottom, C.grassDark);
+    }
+    const padRng = keyRng(seed, "pondpad", k);
+    for (let i = Math.floor(padRng() * 3); i > 0; i--) {
+      const lx = Math.round(pond.cx + (padRng() * 2 - 1) * pond.rx * 0.6);
+      const r = rows(lx);
+      if (r && r[1] - r[0] > 10) drawLilyPad(pm, lx, Math.round(r[0] + 5 + padRng() * (r[1] - r[0] - 9)), padRng, C.water);
+    }
+  }
+
   // path / road, before any objects: everything standing on the ground is
   // depth-sorted and drawn over it, so a tree just below the path can hang
   // its canopy over the dirt instead of being kept clear of it.
@@ -925,7 +978,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
 
   // objects (region-dependent). Each placement pushes a Drawable; they're
   // drawn together at the end in base-y order (see `drawSorted`).
-  const occupied: Rect[] = [];
+  const occupied: Rect[] = ponds.map((p) => ({ x: p.cx - p.rx - 6, y: p.cy - p.ry - 8, w: 2 * p.rx + 12, h: 2 * p.ry + 12 }));
   const drawables: Drawable[] = [];
   const tallGrass: TallGrassSpot[] = [];
   const trees: TreeSpot[] = [];
@@ -1151,6 +1204,20 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
+  // reeds along the far shore of each pond
+  for (const pond of ponds) {
+    const reedRng = keyRng(seed, "pondreeds", k);
+    for (let lx = Math.round(pond.cx - pond.rx); lx < pond.cx + pond.rx - REEDS_W; lx += 8 + Math.floor(reedRng() * 22)) {
+      const keep = reedRng() < 0.5;
+      const r = pondRows(pond, lx + REEDS_W / 2);
+      if (!keep || !r || r[1] - r[0] < 8) continue;
+      const baseY = r[0] + 4 + Math.floor(reedRng() * 3);
+      const ry = baseY - REEDS_H + 3;
+      const sprite = reedsPixmap(keyRng(seed, "pondreedtile", k, lx));
+      drawables.push({ baseY, bounds: { x: lx, y: ry, w: REEDS_W, h: REEDS_H }, draw: () => blit(pm, sprite, lx, ry) });
+    }
+  }
+
   // fence run (route only), along the near edge of the path
   if (cfg.hasFence) {
     const fenceRng = keyRng(seed, "fence", k);
@@ -1179,7 +1246,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
 
   const depth = drawSorted(pm, drawables);
 
-  return { pixmap: pm, depth, tallGrass, trees, berryTrees };
+  return { pixmap: pm, depth, water, tallGrass, trees, berryTrees };
 }
 
 /**
