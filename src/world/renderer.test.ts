@@ -48,3 +48,34 @@ describe("tall-grass encounters", () => {
     expect(frame(true, 1000 + 60000)).toEqual(frame(false, 1000 + 60000));
   });
 });
+
+describe("hidden items", () => {
+  const seed = "emerald";
+
+  function firstItem() {
+    for (let k = 0; k < 60; k++) {
+      const item = generateChunk(seed, k).items[0];
+      if (item) return { k, item };
+    }
+    throw new Error("no hidden item in the first 60 chunks");
+  }
+
+  it("a tap near a hidden item finds it once, and finds can be restored", () => {
+    const { k, item } = firstItem();
+    const scroll = k * CHUNK_W;
+    const r = new Renderer(seed, canvas() as never);
+    r.resize(CHUNK_W);
+    r.draw(scroll, 0);
+    expect(r.poke(item.x + 3, item.y - 2, scroll, 100)).toBe(true);
+    expect(r.foundItems()).toEqual([`${scroll + item.x},${item.y}`]);
+    // already found: tapping it again doesn't find it a second time
+    r.poke(item.x, item.y, scroll, 5000);
+    expect(r.foundItems()).toHaveLength(1);
+
+    const again = new Renderer(seed, canvas() as never);
+    again.resize(CHUNK_W);
+    again.draw(scroll, 0);
+    again.restoreFound([`${scroll + item.x},${item.y}`]);
+    expect(again.foundItems()).toHaveLength(1);
+  });
+});

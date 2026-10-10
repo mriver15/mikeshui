@@ -7,7 +7,8 @@ import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
 import { SkyFauna } from "./fauna";
 import { drawPeekingEyes, drawAlertBubble } from "../sprites/critters";
-import { bannerPixmap } from "../sprites/banner";
+import { bannerPixmap, messagePixmap } from "../sprites/banner";
+import { ITEMS, itemIcon, drawSparkle } from "../sprites/items";
 import { Backdrop } from "./backdrop";
 import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
@@ -149,6 +150,10 @@ export class Renderer {
   private darkness = 0;
   /** The area the view is in, its banner, and when the view entered it. */
   private area: { key: string; banner: Pixmap; since: number } | null = null;
+  /** Hidden items already found, by world position ("x,y"). */
+  private found = new Set<string>();
+  /** The latest find: where, what, and when, for the pickup and message. */
+  private pickup: { wx: number; y: number; kind: number; at: number; message: Pixmap } | null = null;
 
   constructor(
     private seed: string,
@@ -173,6 +178,8 @@ export class Renderer {
     this.chunks.clear();
     this.fgChunks.clear();
     this.area = null;
+    this.found.clear();
+    this.pickup = null;
     this.fauna = new SkyFauna(seed);
     this.clouds = new CloudSky(seed);
     this.backdrop = new Backdrop(seed, HORIZON);
@@ -235,6 +242,7 @@ export class Renderer {
     // canopies, so it can reflect them) — all before the foreground goes
     // on top, so none of them can paint over it
     const visible = this.chunkRange(first, last, (k) => this.getChunk(k));
+    this.drawItemGlints(visible, scrollX, time);
     const lit = pal.darkness > 0.15 && visible.some(({ chunk }) => chunk.lights.length > 0);
     if (lit) this.owners.fill(UNSET);
     this.drawAnimated(visible, scrollX, time, lit ? this.owners : undefined);
@@ -249,6 +257,7 @@ export class Renderer {
     }
     this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, lit ? this.owners : undefined, true);
 
+    this.drawPickup(scrollX, time);
     this.drawBanner(scrollX, time);
     this.present(pal, lit ? visible : [], scrollX, fgScroll);
   }
@@ -311,12 +320,28 @@ export class Renderer {
   }
 
   /**
-   * The viewer tapped the screen at (x, y) in view pixels: if it's on a
-   * tall-grass tuft, set off an encounter there now.
+   * The viewer tapped the screen at (x, y) in view pixels: a hidden item
+   * near the tap is found; otherwise, if it's on a tall-grass tuft, an
+   * encounter starts there.
    */
   poke(x: number, y: number, scrollX: number, time: number): boolean {
     const wx = scrollX + x;
-    const chunk = this.chunks.get(Math.floor(wx / CHUNK_W));
+    const k = Math.floor(wx / CHUNK_W);
+    for (const kk of [k - 1, k, k + 1]) {
+      const c = this.chunks.get(kk);
+      if (!c) continue;
+      for (const item of c.items) {
+        const iwx = kk * CHUNK_W + item.x;
+        const key = `${iwx},${item.y}`;
+        if (this.found.has(key) || Math.abs(iwx - wx) > 9 || Math.abs(item.y - y) > 9) continue;
+        this.found.add(key);
+        const name = ITEMS[item.kind];
+        const article = /^[AEIOU]/.test(name) ? "AN" : "A";
+        this.pickup = { wx: iwx, y: item.y, kind: item.kind, at: time, message: messagePixmap(`FOUND ${article} ${name}!`) };
+        return true;
+      }
+    }
+    const chunk = this.chunks.get(k);
     if (!chunk) return false;
     for (const spot of chunk.tallGrass) {
       if (wx >= spot.x && wx < spot.x + TILE && y >= spot.y + 8 && y < spot.y + TILE) {
@@ -325,6 +350,74 @@ export class Renderer {
       }
     }
     return false;
+  }
+
+  /** Hidden items already found in this world, as "x,y" keys — for saving. */
+  foundItems(): string[] {
+    return [...this.found];
+  }
+
+  /** Mark items as already found (e.g. restored from a previous visit). */
+  restoreFound(keys: string[]): void {
+    for (const key of keys) this.found.add(key);
+  }
+
+  /**
+   * A glint over each hidden item not yet found: a short twinkle every few
+   * seconds on the item's own offset. Drawn before canopies and grass
+   * sway, and only where the spot is open ground in the chunk, so
+   * anything standing in front hides it.
+   */
+  private drawItemGlints(visible: Array<{ k: number; chunk: ChunkResult }>, scrollX: number, time: number): void {
+    const fb = this.fb;
+    const seed = hashString(this.seed + ":glint");
+    for (const { k, chunk } of visible) {
+      for (const item of chunk.items) {
+        const wx = k * CHUNK_W + item.x;
+        if (this.found.has(`${wx},${item.y}`)) continue;
+        if (chunk.depth[item.y * CHUNK_W + item.x] !== 0) continue;
+        const period = 3800 + noise2i(seed, wx, item.y) * 2400;
+        const t = ((time + noise2i(seed + 1, wx, item.y) * period) % period) / 700;
+        if (t >= 1) continue;
+        const x = wx - scrollX;
+        if (x < -3 || x > fb.w + 3) continue;
+        drawSparkle(fb, x, item.y, t);
+      }
+    }
+  }
+
+  /**
+   * The latest find: its icon pops up out of the grass with a burst of
+   * glints and fades, while a message box slides up from the bottom of
+   * the view, holds, and slides away.
+   */
+  private drawPickup(scrollX: number, time: number): void {
+    const p = this.pickup;
+    if (!p) return;
+    const fb = this.fb;
+    const age = time - p.at;
+    if (age > 3200) {
+      this.pickup = null;
+      return;
+    }
+    if (age < 1100) {
+      const icon = itemIcon(p.kind);
+      const rise = Math.min(1, age / 350);
+      const x = p.wx - scrollX;
+      const y = p.y - 6 - Math.round(rise * 12);
+      if (age < 900 || Math.floor(age / 60) % 2 === 0) blit(fb, icon, x - 4, y - 4);
+      if (age < 500) {
+        const r = 3 + (age / 500) * 9;
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 + age / 300;
+          drawSparkle(fb, Math.round(x + Math.cos(a) * r), Math.round(y + Math.sin(a) * r * 0.7), 0.5);
+        }
+      }
+    }
+    const m = p.message;
+    const ease = (t: number) => 1 - (1 - t) * (1 - t);
+    const shown = age < 250 ? ease(age / 250) : age > 2800 ? 1 - ease((age - 2800) / 400) : 1;
+    blit(fb, m, Math.round((fb.w - m.w) / 2), Math.round(fb.h - (m.h + 6) * shown));
   }
 
   /**

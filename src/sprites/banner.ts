@@ -43,3 +43,22 @@ export function bannerPixmap(name: string, kind: AreaKind): Pixmap {
   drawText(p, text, w / 2, 7, C.uiText, 1, LARGE_FONT);
   return p;
 }
+
+/**
+ * A message box for things that happen ("FOUND A BERRY!"): the name in
+ * large letters on a cream panel inside a double stone-blue border, like
+ * the games' dialogue boxes.
+ */
+export function messagePixmap(text: string): Pixmap {
+  const t = text.toUpperCase();
+  const w = Math.max(96, textWidth(t, 1, LARGE_FONT) + 24);
+  const h = 21;
+  const p = new Pixmap(w + 2, h + 2);
+  p.fillRect(2, 2, w, h, C.uiShadow);
+  p.fillRect(0, 0, w, h, C.black);
+  p.fillRect(1, 1, w - 2, h - 2, C.uiStone);
+  p.fillRect(2, 2, w - 4, h - 4, C.uiStoneDark);
+  p.fillRect(3, 3, w - 6, h - 6, C.uiFill);
+  drawText(p, t, w / 2, 7, C.uiText, 1, LARGE_FONT);
+  return p;
+}

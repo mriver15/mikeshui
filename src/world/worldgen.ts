@@ -42,6 +42,7 @@ import {
   LAMP_H,
 } from "../sprites/town";
 import { paintWaterColumn, paintShoreColumn, pondRows, type Pond, type WaterSpan } from "./water";
+import { ITEMS } from "../sprites/items";
 import { findTown, ROAD_HALF, STREET_HALF, type Town, type Lot } from "./town";
 
 export const VIEW_H = 320;
@@ -309,8 +310,17 @@ export interface LampLight {
   baseY: number;
 }
 
+/** Something hidden in the grass, found by tapping its glint (chunk-local x). */
+export interface HiddenItem {
+  x: number;
+  y: number;
+  /** Index into ITEMS (sprites/items.ts). */
+  kind: number;
+}
+
 export interface ChunkResult {
   pixmap: Pixmap;
+  items: HiddenItem[];
   lights: LampLight[];
   /**
    * Open water per column (index = chunk-local x): lake and pond spans,
@@ -989,6 +999,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   const tallGrass: TallGrassSpot[] = [];
   const trees: TreeSpot[] = [];
   const berryTrees: BerryTreeSpot[] = [];
+  const items: HiddenItem[] = [];
   const fieldTop = HORIZON + 6;
   const fieldBottom = VIEW_H - 2;
 
@@ -1193,6 +1204,19 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
+  // hidden items: about half of countryside chunks hide one somewhere on
+  // open ground (forests sometimes two), marked only by a glint
+  const itemRng = keyRng(seed, "items", k);
+  const itemCount = (itemRng() < 0.5 ? 1 : 0) + (cfg === REGION_CONFIGS[REGION_FOREST] && itemRng() < 0.3 ? 1 : 0);
+  for (let n = 0, tries = 0; n < itemCount && tries < 8; tries++) {
+    const x = 12 + Math.floor(itemRng() * (CHUNK_W - 24));
+    const y = fieldTop + 10 + Math.floor(itemRng() * (fieldBottom - fieldTop - 16));
+    const kind = Math.floor(itemRng() * ITEMS.length);
+    if (!notUrbanAt(x0 + x) || !groundFree({ x: x - 4, y: y - 4, w: 9, h: 6 }, x0, seed, occupied)) continue;
+    items.push({ x, y, kind });
+    n++;
+  }
+
   // reeds standing in the shallows along the lake shore
   if (cfg.hasLake) {
     const reedRng = keyRng(seed, "reeds", k);
@@ -1253,7 +1277,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
 
   const { depth, depthBase } = drawSorted(pm, drawables);
 
-  return { pixmap: pm, depth, depthBase, water, lights, tallGrass, trees, berryTrees };
+  return { pixmap: pm, depth, depthBase, water, lights, items, tallGrass, trees, berryTrees };
 }
 
 /**

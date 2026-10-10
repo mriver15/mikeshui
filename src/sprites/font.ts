@@ -47,6 +47,7 @@ export const SMALL_FONT: Font = {
   " ": ["0", "0", "0", "0", "0"],
   "'": ["1", "1", "0", "0", "0"],
   "-": ["000", "000", "111", "000", "000"],
+  "!": ["1", "1", "1", "0", "1"],
 };
 
 export const LARGE_FONT: Font = {
@@ -89,6 +90,7 @@ export const LARGE_FONT: Font = {
   " ": ["000", "000", "000", "000", "000", "000", "000"],
   "'": ["1", "1", "0", "0", "0", "0", "0"],
   "-": ["000", "000", "000", "111", "000", "000", "000"],
+  "!": ["1", "1", "1", "1", "1", "0", "1"],
 };
 
 /** Pixel width of `text` at `scale`, with one (scaled) pixel between letters. Unknown characters are skipped. */

@@ -84,6 +84,7 @@ export function boot(root: HTMLElement): void {
   root.appendChild(ui);
 
   const renderer = new Renderer(seed, canvas);
+  renderer.restoreFound(loadFound(seed));
   const state: AppState = {
     renderer,
     canvas,
@@ -170,6 +171,7 @@ export function boot(root: HTMLElement): void {
     state.seed = next;
     state.seedLabel.textContent = next;
     renderer.setSeed(next);
+    renderer.restoreFound(loadFound(next));
   });
   ui.querySelector("#dl")?.addEventListener("click", () => {
     canvas.toBlob((blob) => {
@@ -243,7 +245,9 @@ export function boot(root: HTMLElement): void {
       const rect = canvas.getBoundingClientRect();
       const x = ((e.clientX - rect.left) / rect.width) * state.logicalW;
       const y = ((e.clientY - rect.top) / rect.height) * VIEW_H;
-      renderer.poke(Math.floor(x), Math.floor(y), Math.round(motion.x), performance.now());
+      if (renderer.poke(Math.floor(x), Math.floor(y), Math.round(motion.x), performance.now())) {
+        saveFound(state.seed, renderer.foundItems());
+      }
       return;
     }
     // a drag that stopped before release shouldn't fling
@@ -290,6 +294,29 @@ function whenIdle(work: (timeLeft: () => number, overdue: boolean) => void): voi
       const start = performance.now();
       work(() => 10 - (performance.now() - start), false);
     }, 16);
+  }
+}
+
+/**
+ * Items already found in a world, remembered in this browser so they stay
+ * found on the next visit. Storage can be unavailable (private windows,
+ * blocked site data); then finds simply aren't remembered.
+ */
+function loadFound(seed: string): string[] {
+  try {
+    const raw = window.localStorage.getItem(`emerald-field:found:${seed}`);
+    const keys: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(keys) ? keys.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFound(seed: string, keys: string[]): void {
+  try {
+    window.localStorage.setItem(`emerald-field:found:${seed}`, JSON.stringify(keys));
+  } catch {
+    // storage unavailable: finds just won't persist
   }
 }
 

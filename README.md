@@ -48,6 +48,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 - **Area names**: original generated town names (checked against the games' real town names so none ever match), numbered routes between towns, named town-limit signs, and a GBA-style location banner on entering each area.
 - **Wild encounters**: occupied tufts of tall grass rustle, shed leaves and show a pair of peeking eyes (glowing after dark) under an alert bubble, and tapping any tuft sets one off.
 - **Flying silhouettes**: bird flocks (V-formations and loose bunches), lone soaring birds and night-time bats, each with a wing-flap cycle, crossing the sky on a parallax layer between the hills.
+- **Hidden items**: about half of the countryside hides an item in the grass, marked only by an occasional glint. Tap it to pick it up (a berry, a shiny stone, honey and more). Finds are remembered per world in your browser.
 - **Time of day**: the palette is re-tinted through dawn, day, dusk and night, with emissive lamps, lit windows, stars and a moon.
 - **Smooth scrolling**: eased motion with momentum, plus an idle-time buffer that generates the world just ahead of the view so new chunks never stall a frame.
 
@@ -58,6 +59,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 | Hold `←` / `→` | Walk (speeds up, coasts to a stop) |
 | Drag | Pan the view (flick to keep gliding) |
 | Tap tall grass | Disturb whatever's hiding in it |
+| Tap a glint | Pick up a hidden item |
 | `◀` / `▶` | Glide a short way |
 | Time button | Jump to the next time of day |
 | `✦ new` | Generate a new world |
