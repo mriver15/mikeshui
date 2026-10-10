@@ -10,6 +10,10 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 
 ![A forest route with a fading trail, mixed groves and a reed-fringed pond](docs/images/forest.png)
 
+**Beaches.** Along some stretches the land meets the sea: sand takes over from grass, palms lean over the dunes, the path becomes a boardwalk, and waves roll in to the shore past shells, starfish, boulders and the odd beach umbrella.
+
+![A beach route: palms on the dunes, a boardwalk, and waves rolling in](docs/images/beach.png)
+
 **Towns.** Planned towns along a paved street: houses with fenced yards and mailboxes, a healing center and a mart side by side mid-town, street lamps, gardens and bench nooks.
 
 ![A town street at midday](docs/images/town.png)
@@ -39,7 +43,8 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 ## Features
 
 - **Infinite, seeded world**: the same seed always produces the same world, generated in chunks as you scroll.
-- **Regions**: open routes, dense forest and towns, blended smoothly along the way.
+- **Regions**: open routes, dense forest, beaches and towns, blended smoothly along the way.
+- **Beaches**: sand with dune shading and wind ripples, curving palms with swaying fronds, a boardwalk across the sand, the sea with waves rolling in, and dune grass, boulders, driftwood, shells, starfish and striped umbrellas.
 - **Trees that grow out of the ground**: every tree is unique (canopy shape, lean, trunk flare and roots), with shadows and grass tufts around its base. Trees cluster into groves with clearings in between.
 - **Depth**: everything standing on the ground is drawn back to front, and a per-pixel depth buffer keeps swaying canopies and grass behind anything in front of them.
 - **Water**: lakes and ponds with shallows and deep water, a sandy shoreline all the way round, reflections, ripples, lapping foam, lily pads, reeds, and fish that surface in spreading rings or leap out of the water and splash back in.

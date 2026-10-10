@@ -119,7 +119,8 @@ describe("tree variety", () => {
     for (let k = 0; k < 40; k++) {
       for (const spot of generateChunk("1790824785082", k).trees) kinds.add(spot.spec.kind);
     }
-    expect(kinds).toEqual(new Set(["broadleaf", "conifer"]));
+    expect(kinds.has("broadleaf")).toBe(true);
+    expect(kinds.has("conifer")).toBe(true);
   });
 });
 
@@ -168,7 +169,7 @@ describe("generateChunk golden hash (refactor-safety net)", () => {
   // the number), then update GOLDEN_HASH below to the printed "received" value.
   const GOLDEN_SEEDS = ["1790824785082", "42", "0", "hello world"];
   const GOLDEN_CHUNKS = Array.from({ length: 20 }, (_, i) => i - 5); // -5..14
-  const GOLDEN_HASH = "99280b9e54203b4411623623fe23af4a088becf4afa7f92b5d9122707a9c39c5";
+  const GOLDEN_HASH = "af5fab6593a24c49b02080a98be70d2c8aa67c9a30ff59091e0b8c3eee23b621";
 
   it("matches the recorded golden hash", () => {
     const hash = createHash("sha256");
@@ -197,5 +198,29 @@ describe("generateForeground", () => {
     const a = generateForeground("1790824785082", 2);
     const b = generateForeground("1790824785082", 2);
     expect(a.pixmap.data).toEqual(b.pixmap.data);
+  });
+});
+
+describe("beach region", () => {
+  it("has a sea with waves, palms on the sand, and a sandy shore", () => {
+    let seaChunks = 0;
+    let palms = 0;
+    let broadleafOnSand = 0;
+    const sands = new Set([C.sand, C.sandDark, C.sandLight]);
+    for (let k = 80; k < 100; k++) {
+      const c = generateChunk("emerald", k);
+      if (c.water.filter((col) => col.some((s) => s[2])).length > CHUNK_W / 2) seaChunks++;
+      for (const t of c.trees) {
+        if (t.spec.kind === "palm") palms++;
+        else {
+          const base = t.y + Math.round(61 * t.scale);
+          const cx = t.x - k * CHUNK_W + Math.round(32 * t.scale);
+          if (base < VIEW_H && sands.has(c.pixmap.get(cx + 6, base + 2))) broadleafOnSand++;
+        }
+      }
+    }
+    expect(seaChunks).toBeGreaterThan(0);
+    expect(palms).toBeGreaterThan(0);
+    expect(broadleafOnSand).toBe(0);
   });
 });

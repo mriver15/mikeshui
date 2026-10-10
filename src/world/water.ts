@@ -4,11 +4,11 @@ import { noise2i } from "../core/prng";
 import { valueNoise2D } from "../core/perlin";
 
 /**
- * Open water in one column: [first row, last row]. The first row sits
- * just below the shoreline, which is also the line the renderer mirrors
- * reflections about.
+ * Open water in one column: [first row, last row, is it the sea]. The
+ * first row sits just below the shoreline, which is also the line the
+ * renderer mirrors reflections about; the sea gets waves rolling in.
  */
-export type WaterSpan = [top: number, bottom: number];
+export type WaterSpan = [top: number, bottom: number, sea?: boolean];
 
 /**
  * Fill one column of open water, banded by depth: pale shallows along the
@@ -39,13 +39,16 @@ export function paintWaterColumn(
 
 /**
  * A sandy shore from `sandTop` down to `waterTop - 1`: a dark grass lip
- * above, pale sand flecked with pebbles, and a band of darker wet sand
- * right at the water. `sandTop` may sit well above `waterTop` where the
- * shoreline is steep (the tapering ends of a lake or pond), so the bank
- * runs down the side instead of leaving the water's edge bare.
+ * above (where grass meets it), pale sand flecked with pebbles, and a
+ * band of darker wet sand right at the water. `sandTop` may sit well
+ * above `waterTop` where the shoreline is steep (the tapering ends of a
+ * lake or pond), so the bank runs down the side instead of leaving the
+ * water's edge bare.
  */
 export function paintShoreColumn(pm: Pixmap, lx: number, wx: number, sandTop: number, waterTop: number, pebbleSeed: number): void {
-  pm.set(lx, sandTop - 1, C.grassDark);
+  // a dark grass lip where the bank meets grass (not where it meets sand)
+  const above = pm.get(lx, sandTop - 1);
+  if (above === C.grass || above === C.grassLight) pm.set(lx, sandTop - 1, C.grassDark);
   for (let y = sandTop; y < waterTop; y++) {
     if (y === waterTop - 1) {
       pm.set(lx, y, C.pathDark);

@@ -27,10 +27,11 @@ export function puff(p: Pixmap, cx: number, cy: number, r: number, swayX = 0): v
  * One canopy lobe, in 64×64 sprite space. Broadleaf: a puff's centre and
  * radius. Conifer: one tier of boughs — apex x, bottom y, half-width at
  * the bottom (the apex y is derived from the tier above, see `coniferApex`).
+ * Palm: one frond — angle in radians, length, droop.
  */
 type Lobe = [x: number, y: number, size: number];
 
-export type TreeKind = "broadleaf" | "conifer";
+export type TreeKind = "broadleaf" | "conifer" | "palm";
 
 /**
  * Everything that makes one tree look like itself — canopy lobes, trunk
@@ -55,7 +56,30 @@ const TRUNK_BASE_Y = 61;
 
 /** Roll a tree of the given kind (see `broadleafSpec` / `coniferSpec`). */
 export function treeSpec(rng: RNG, kind: TreeKind = "broadleaf"): TreeSpec {
-  return kind === "conifer" ? coniferSpec(rng) : broadleafSpec(rng);
+  return kind === "conifer" ? coniferSpec(rng) : kind === "palm" ? palmSpec(rng) : broadleafSpec(rng);
+}
+
+/** Where a palm's crown sits: its lean's x offset and crown y, kept on the spec as `lean` and `girth`. */
+const PALM_CROWN_Y = 14;
+
+/**
+ * A palm: a slender, curving, ringed trunk (its bend stored as `lean`)
+ * and 7–9 fronds fanning out from the crown — most reaching up and out,
+ * a couple drooping — each its own lobe so it can sway on its own.
+ */
+function palmSpec(rng: RNG): TreeSpec {
+  // bend and frond reach together stay inside the 64px sprite
+  const bend = (rng() < 0.5 ? -1 : 1) * (3 + rng() * 6);
+  const n = 7 + Math.floor(rng() * 3);
+  const lobes: Lobe[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const angle = Math.PI * (0.94 + t * 1.12) + (rng() * 2 - 1) * 0.12;
+    lobes.push([angle, 16 + rng() * 6, 0.55 + rng() * 0.5]);
+  }
+  // draw upward fronds first so the drooping ones hang in front
+  lobes.sort((a, b) => Math.sin(a[0]) - Math.sin(b[0]));
+  return { kind: "palm", lobes, lean: bend, girth: PALM_CROWN_Y + Math.round(rng() * 5), roots: [] };
 }
 
 /**
@@ -138,9 +162,80 @@ function coniferApex(lobes: Lobe[], i: number): number {
 
 /** Lowest pixel row the canopy covers — where the visible trunk begins. */
 function canopyBottom(spec: TreeSpec): number {
+  if (spec.kind === "palm") return spec.girth + 6;
   return spec.kind === "conifer"
     ? Math.max(...spec.lobes.map(([, y]) => y))
     : Math.max(...spec.lobes.map(([, cy, r]) => cy + r));
+}
+
+/** A palm's trunk centre x at height `y` (it curves, bending most near the crown). */
+function palmTrunkX(spec: TreeSpec, y: number): number {
+  const t = (TRUNK_BASE_Y - y) / (TRUNK_BASE_Y - spec.girth);
+  return TRUNK_BASE_X + spec.lean * t * t;
+}
+
+/**
+ * A palm trunk: a slim tan stem curving up to the crown, outlined, with a
+ * darker ring every few pixels and a slight flare where it meets the sand.
+ */
+function drawPalmTrunk(p: Pixmap, spec: TreeSpec): void {
+  const crown = spec.girth;
+  for (let y = crown; y <= TRUNK_BASE_Y; y++) {
+    const t = (TRUNK_BASE_Y - y) / (TRUNK_BASE_Y - crown);
+    const c = palmTrunkX(spec, y);
+    const half = 1.4 + (1 - t) * 0.9 + (y > TRUNK_BASE_Y - 2 ? 1 : 0);
+    const x0 = Math.round(c - half);
+    const x1 = Math.round(c + half);
+    p.set(x0 - 1, y, C.black);
+    p.set(x1 + 1, y, C.black);
+    const ring = (TRUNK_BASE_Y - y) % 3 === 0;
+    for (let x = x0; x <= x1; x++) {
+      p.set(x, y, ring ? C.woodDark : x === x0 ? C.wallTan : C.wallTanShade);
+    }
+  }
+  p.fillRect(TRUNK_BASE_X - 4, TRUNK_BASE_Y + 1, 9, 1, C.black);
+}
+
+/**
+ * A palm's fronds and coconuts. Each frond is a tapering arc out from the
+ * crown that droops toward its tip, outlined, with feathery leaflets
+ * ticked off both sides; `sway` swings each frond's tip on its own.
+ */
+function drawPalmCanopy(p: Pixmap, spec: TreeSpec, sway?: number[]): void {
+  const cx = palmTrunkX(spec, spec.girth);
+  const cy = spec.girth;
+  const path = (lobe: Lobe, idx: number, s: number) => {
+    const [angle, len, droop] = lobe;
+    const x = cx + Math.cos(angle) * len * s + (sway?.[idx] ?? 0) * s * 1.6;
+    return [Math.max(3, Math.min(TREE_W - 4, x)), cy + Math.sin(angle) * len * s + droop * len * s * s];
+  };
+  // outlines first, so overlapping fronds don't draw black over each other
+  spec.lobes.forEach((lobe, idx) => {
+    for (let s = 0; s <= 1; s += 0.06) {
+      const [x, y] = path(lobe, idx, s);
+      p.fillCircle(x, y, 1.7 * (1 - s) + 1.2, C.black);
+    }
+  });
+  spec.lobes.forEach((lobe, idx) => {
+    for (let s = 0; s <= 1; s += 0.06) {
+      const [x, y] = path(lobe, idx, s);
+      p.fillCircle(x, y, 1.7 * (1 - s) + 0.4, s < 0.5 ? C.tree : C.treeDark);
+    }
+    for (let s = 0.15; s < 0.95; s += 0.12) {
+      const [x, y] = path(lobe, idx, s);
+      const [x2, y2] = path(lobe, idx, s + 0.05);
+      const nx = -(y2 - y);
+      const ny = x2 - x;
+      const nl = Math.hypot(nx, ny) || 1;
+      const reach = 2.6 * (1 - s) + 1.4;
+      p.set(Math.round(x + (nx / nl) * reach), Math.round(y + (ny / nl) * reach), C.treeLight);
+      p.set(Math.round(x - (nx / nl) * reach), Math.round(y - (ny / nl) * reach), C.tree);
+    }
+  });
+  for (const [dx, dy] of [[-2, 2], [1, 3], [3, 1]]) {
+    p.fillCircle(cx + dx, cy + dy, 1.8, C.black);
+    p.fillCircle(cx + dx, cy + dy, 1.1, C.trunkDark);
+  }
 }
 
 /** How many canopy lobes a tree has — the length a caller's `sway` array should be. */
@@ -174,6 +269,10 @@ export const BERRY_TREE_LOBE_COUNT = BERRY_TREE_SPEC.lobes.length;
  * snake outward and down into the ground from the flare.
  */
 function drawTrunk(p: Pixmap, spec: TreeSpec): void {
+  if (spec.kind === "palm") {
+    drawPalmTrunk(p, spec);
+    return;
+  }
   const top = Math.round(canopyBottom(spec) - 8);
   const base = TRUNK_BASE_Y;
   const span = base - top;
@@ -226,6 +325,10 @@ function drawTrunk(p: Pixmap, spec: TreeSpec): void {
 }
 
 function drawCanopy(p: Pixmap, spec: TreeSpec, sway?: number[]): void {
+  if (spec.kind === "palm") {
+    drawPalmCanopy(p, spec, sway);
+    return;
+  }
   if (spec.kind === "conifer") {
     // bottom tier first: each tier's serrated skirt overlaps the top of
     // the wider tier below it, as boughs hang over the ones beneath
@@ -634,4 +737,94 @@ export function drawLilyPad(p: Pixmap, cx: number, cy: number, rng: RNG, water: 
     p.set(fx + 1, fy, C.flowerWhite);
     p.set(fx, fy, C.flowerYellow);
   }
+}
+
+export const DUNE_GRASS_W = 16;
+export const DUNE_GRASS_H = 12;
+
+/** A clump of dune grass: thin, pale blades fanning up out of a little mound of darker sand. */
+export function duneGrassPixmap(rng: RNG): Pixmap {
+  const p = new Pixmap(DUNE_GRASS_W, DUNE_GRASS_H);
+  const base = DUNE_GRASS_H - 1;
+  p.fillEllipse(DUNE_GRASS_W / 2, base, 6, 1.6, C.sandDark);
+  const blades = 6 + Math.floor(rng() * 4);
+  for (let b = 0; b < blades; b++) {
+    const lean = (b / (blades - 1) - 0.5) * 1.4 + (rng() * 2 - 1) * 0.2;
+    const h = 5 + Math.floor(rng() * 6);
+    const x0 = DUNE_GRASS_W / 2 + (rng() * 2 - 1) * 2;
+    for (let i = 0; i < h; i++) {
+      const c = i > h - 3 ? C.grassLight : i > h / 2 ? C.berryGreen : C.grassDark;
+      p.set(Math.round(x0 + lean * i * 0.7), base - 1 - i, c);
+    }
+  }
+  return p;
+}
+
+/** A rounded boulder `w` wide: outlined, lit at the upper left, shadowed at the lower right. */
+export function rockPixmap(rng: RNG, w: number): Pixmap {
+  const h = Math.round(w * (0.6 + rng() * 0.15));
+  const p = new Pixmap(w + 2, h + 2);
+  const cx = (w + 2) / 2;
+  const cy = (h + 2) / 2 + 0.5;
+  p.fillEllipse(cx, cy, w / 2 + 0.6, h / 2 + 0.6, C.black);
+  p.fillEllipse(cx, cy, w / 2 - 0.4, h / 2 - 0.4, C.roadDark);
+  p.fillEllipse(cx - w * 0.12, cy - h * 0.14, w * 0.34, h * 0.3, C.road);
+  p.fillEllipse(cx - w * 0.2, cy - h * 0.22, w * 0.14, h * 0.12, C.roadLight);
+  p.fillRect(1, h, w, 1, C.black);
+  return p;
+}
+
+export const UMBRELLA_W = 30;
+export const UMBRELLA_H = 30;
+
+/**
+ * A striped beach umbrella planted in the sand: a domed, scalloped canopy
+ * in alternating stripes (one of a few cheerful pairs) on a thin pole.
+ */
+export function umbrellaPixmap(rng: RNG): Pixmap {
+  const p = new Pixmap(UMBRELLA_W, UMBRELLA_H);
+  const pairs = [
+    [C.houseRoof, C.houseTrim],
+    [C.water, C.houseTrim],
+    [C.flowerYellow, C.flowerOrange],
+    [C.roofGreen, C.houseTrim],
+  ];
+  const [a, b] = pairs[Math.floor(rng() * pairs.length)];
+  const cx = UMBRELLA_W / 2;
+  const top = 3;
+  const rim = 12;
+  p.fillRect(cx - 1, top, 2, UMBRELLA_H - top, C.black);
+  p.fillRect(cx - 0.5, top + 1, 1, UMBRELLA_H - top - 2, C.wood);
+  for (let y = top; y <= rim; y++) {
+    const half = 13 * Math.sqrt(1 - Math.pow((rim - y) / (rim - top + 1), 2));
+    for (let x = Math.round(cx - half); x <= Math.round(cx + half); x++) {
+      const edge = x === Math.round(cx - half) || x === Math.round(cx + half) || y === top;
+      const stripe = Math.floor((x - cx + 13) / 4.4) % 2 === 0 ? a : b;
+      p.set(x, y, edge ? C.black : stripe);
+    }
+  }
+  for (let x = Math.round(cx - 13); x <= Math.round(cx + 13); x++) {
+    const bump = ((x - Math.round(cx - 13)) % 5) < 3 ? 1 : 0;
+    p.set(x, rim + 1, C.black);
+    if (bump) p.set(x, rim + 2, C.black);
+  }
+  p.set(cx - 1, top - 1, C.black);
+  p.set(cx, top - 1, C.black);
+  return p;
+}
+
+/** A tiny seashell on the sand at (x, y). */
+export function drawShell(p: Pixmap, x: number, y: number, pink: boolean): void {
+  p.set(x, y, C.pathDark);
+  p.set(x + 1, y, pink ? C.flowerOrange : C.houseTrim);
+  p.set(x + 2, y, C.pathDark);
+  p.set(x + 1, y - 1, pink ? C.houseRoofLight : C.sandLight);
+}
+
+/** A small starfish on the sand centred at (x, y). */
+export function drawStarfish(p: Pixmap, x: number, y: number): void {
+  for (const [dx, dy] of [[0, -2], [-2, 0], [2, 0], [-1, 2], [1, 2], [0, -1], [-1, 0], [1, 0], [0, 0], [-1, 1], [1, 1]]) {
+    p.set(x + dx, y + dy, C.flowerOrange);
+  }
+  p.set(x, y, C.flowerYellow);
 }

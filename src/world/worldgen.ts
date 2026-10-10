@@ -10,6 +10,13 @@ import {
   logPixmap,
   reedsPixmap,
   drawLilyPad,
+  duneGrassPixmap,
+  rockPixmap,
+  umbrellaPixmap,
+  drawShell,
+  drawStarfish,
+  DUNE_GRASS_W,
+  UMBRELLA_W,
   FERN_W,
   FERN_H,
   LOG_H,
@@ -61,6 +68,7 @@ const TREE_CANDIDATES = 44;
 const REGION_ROUTE = 0;
 const REGION_FOREST = 1;
 const REGION_CITY = 2;
+const REGION_BEACH = 3;
 
 /**
  * What spawns in a region and how often — the one place to edit when
@@ -91,7 +99,7 @@ interface RegionConfig {
   hasFence: boolean;
 }
 
-const REGION_CONFIGS: Record<typeof REGION_ROUTE | typeof REGION_FOREST, RegionConfig> = {
+const REGION_CONFIGS: Record<typeof REGION_ROUTE | typeof REGION_FOREST | typeof REGION_BEACH, RegionConfig> = {
   [REGION_ROUTE]: {
     name: "route",
     hasLake: true,
@@ -121,14 +129,39 @@ const REGION_CONFIGS: Record<typeof REGION_ROUTE | typeof REGION_FOREST, RegionC
     hasTallGrass: true,
     hasFlowers: true,
     hasFence: false,
+  },  [REGION_BEACH]: {
+    name: "beach",
+    hasLake: true,
+    hasTrainer: true,
+    treeDensityUpland: 0.24,
+    treeDensityLowland: 0.18,
+    coniferShare: 0,
+    undergrowth: 0,
+    pondChance: 0,
+    hasBerryTree: false,
+    hasBushes: false,
+    hasTallGrass: false,
+    hasFlowers: false,
+    hasFence: false,
   },
+
 };
 
 function regionAt(x: number, seed: string): number {
   const v = fbm1D(x / 8000, seed + ":region", 3);
   if (v > 0.72) return REGION_CITY;
   if (v > 0.5) return REGION_FOREST;
+  if (coastAt(x, seed, v) > 0.5) return REGION_BEACH;
   return REGION_ROUTE;
+}
+
+/**
+ * How coastal a stretch of open country is (0..1): its own slow noise,
+ * damped wherever the region noise leans toward forest, so beaches only
+ * appear out on the open routes — never in the woods or a town.
+ */
+function coastAt(x: number, seed: string, regionNoise: number): number {
+  return smoothstep(0.58, 0.68, fbm1D(x / 6500, seed + ":coast", 2)) * (1 - smoothstep(0.42, 0.52, regionNoise));
 }
 
 /** How far outside a town its influence (path widening and levelling, tidier ground) reaches. */
@@ -149,7 +182,7 @@ function inTown(x: number, seed: string): boolean {
  * the town's exact extent, so the street, its approach and the edge of
  * the countryside all agree on where town begins.
  */
-function regionWeights(x: number, seed: string): { urban: number; forest: number } {
+function regionWeights(x: number, seed: string): { urban: number; forest: number; beach: number } {
   const v = fbm1D(x / 8000, seed + ":region", 3);
   const t = townNear(x, seed, TOWN_APPROACH);
   let urban = 0;
@@ -158,7 +191,8 @@ function regionWeights(x: number, seed: string): { urban: number; forest: number
     urban = 1 - smoothstep(0, TOWN_APPROACH, d);
   }
   const forest = smoothstep(0.46, 0.56, v) * (1 - urban);
-  return { urban, forest };
+  const beach = coastAt(x, seed, v) * (1 - urban);
+  return { urban, forest, beach };
 }
 
 // --- continuous terrain curves (functions of world x, seam-free) ---
@@ -199,8 +233,8 @@ export interface Weather {
  * stretch brings the rain on gradually and walking out clears it.
  */
 export function weatherAt(x: number, seed: string): Weather {
-  const { forest } = regionWeights(x, seed);
-  const rain = smoothstep(0.6, 0.7, fbm1D(x / 7000, seed + ":rain", 2) + forest * 0.06);
+  const { forest, beach } = regionWeights(x, seed);
+  const rain = smoothstep(0.6, 0.7, fbm1D(x / 7000, seed + ":rain", 2) + forest * 0.06) * (1 - beach * 0.6);
   const fog = smoothstep(0.62, 0.72, fbm1D(x / 5200, seed + ":fog", 2)) * (1 - rain * 0.6);
   return { rain, fog };
 }
@@ -236,8 +270,9 @@ const PATH_MIN_HALF = 3;
 function pathBand(x: number, seed: string): [number, number] | null {
   const t = townNear(x, seed);
   if (t) return [t.roadY - STREET_HALF, t.roadY + STREET_HALF];
-  const { urban, forest } = regionWeights(x, seed);
-  const half = (26 + urban * (STREET_HALF - 26)) * (1 - smoothstep(0.3, 0.85, forest));
+  const { urban, forest, beach } = regionWeights(x, seed);
+  // narrower across the sand: a boardwalk, not a highway
+  const half = (26 + urban * (STREET_HALF - 26)) * (1 - smoothstep(0.3, 0.85, forest)) * (1 - 0.45 * smoothstep(0.4, 0.8, beach));
   if (half < PATH_MIN_HALF) return null;
   const c = Math.round(pathCenter(x, seed));
   const ragged = Math.min(1, forest * 2);
@@ -257,16 +292,38 @@ function lakeDepth(x: number, seed: string): number {
   return smoothstep(0.58, 0.74, fbm1D(x / 520, seed + ":lake", 2));
 }
 
-function inLake(x: number, seed: string): boolean {
-  return lakeDepth(x, seed) > 0.15;
-}
-
-/** Whether a horizontal span [x0, x0+w) crosses any lake water (non-city). */
+/** Whether a horizontal span [x0, x0+w) crosses any lake or sea (non-town). */
 function overWater(x0: number, w: number, seed: string): boolean {
   for (let sx = x0; sx <= x0 + w; sx += 24) {
-    if (!inTown(sx, seed) && inLake(sx, seed)) return true;
+    if (waterlineAt(sx, seed) < VIEW_H - 4) return true;
   }
   return false;
+}
+
+/** The sea's open-water line, on a calm day: it rides up the view the more coastal the stretch. */
+const SEA_TOP = 254;
+
+/** Sea surface y at world-x `x`, for a stretch `beach` coastal (0..1). */
+function seaSurfaceY(x: number, seed: string, beach: number): number {
+  const base = SEA_TOP + Math.sin(x * 0.021) * 3 + fbm1D(x / 90, seed + ":surf", 2) * 8;
+  return Math.round(VIEW_H - (VIEW_H - base) * smoothstep(0.15, 0.6, beach));
+}
+
+/**
+ * The top row of open water in a world column — a lake's or the sea's,
+ * whichever reaches higher — or VIEW_H where it's dry (and always in
+ * towns). The one definition shores, placement and the foreground share.
+ */
+function waterlineAt(x: number, seed: string): number {
+  return waterAt(x, seed).y;
+}
+
+function waterAt(x: number, seed: string): { y: number; sea: boolean } {
+  if (inTown(x, seed)) return { y: VIEW_H, sea: false };
+  const lake = lakeDepth(x, seed) > 0.02 ? waterSurfaceY(x, seed) : VIEW_H;
+  const { beach } = regionWeights(x, seed);
+  const sea = beach > 0.15 ? seaSurfaceY(x, seed, beach) : VIEW_H;
+  return sea < VIEW_H && sea <= lake ? { y: sea, sea: true } : { y: lake, sea: false };
 }
 
 /**
@@ -479,12 +536,17 @@ function groundedTreeBounds(x: number, y: number, scale: number): Rect {
 function drawTreeShadow(pm: Pixmap, x: number, y: number, scale: number, rng: () => number): void {
   const cx = x + (TREE_W * scale) / 2;
   const baseY = y + Math.round(61 * scale);
-  pm.fillEllipse(cx + 3 * scale, baseY - 1, 17 * scale, 3.5 * scale, C.grassDark);
+  // a shadow on sand is sand-colored, not a patch of dark grass
+  const shade = SANDS.has(pm.get(Math.round(cx), Math.min(VIEW_H - 1, baseY))) ? C.sandDark : C.grassDark;
+  pm.fillEllipse(cx + 3 * scale, baseY - 1, 17 * scale, 3.5 * scale, shade);
   for (let i = 0; i < 2; i++) {
     const ox = (rng() * 2 - 1) * 10 * scale;
-    pm.fillEllipse(cx + ox + 2 * scale, baseY + (rng() - 0.3) * 2 * scale, (6 + rng() * 6) * scale, 2.5 * scale, C.grassDark);
+    pm.fillEllipse(cx + ox + 2 * scale, baseY + (rng() - 0.3) * 2 * scale, (6 + rng() * 6) * scale, 2.5 * scale, shade);
   }
 }
+
+/** The sand colors, for telling sand from grass when placing things. */
+const SANDS = new Set([C.sand, C.sandDark, C.sandLight, C.shore]);
 
 /**
  * The tree's trunk and roots (its canopy is drawn per frame by the
@@ -495,7 +557,8 @@ function drawGroundedTree(pm: Pixmap, x: number, y: number, scale: number, spec:
   const cx = x + (TREE_W * scale) / 2;
   const baseY = y + Math.round(61 * scale);
   blitScaled(pm, treeTrunkPixmap(spec), x, y, scale);
-  drawTreeBaseClutter(pm, cx, baseY + Math.round(scale), scale, rng);
+  // grass tufts and mushrooms belong under trees in grass, not palms on sand
+  if (spec.kind !== "palm") drawTreeBaseClutter(pm, cx, baseY + Math.round(scale), scale, rng);
 }
 
 function overlaps(a: Rect, b: Rect): boolean {
@@ -517,9 +580,7 @@ function groundFree(
     const wx = x0 + lx;
     const band = pathBand(wx, seed);
     if (band && band[0] < r.y + r.h && band[1] > r.y) return false;
-    if (!inTown(wx, seed) && inLake(wx, seed) && r.y + r.h > LAKE_TOP) {
-      return false;
-    }
+    if (r.y + r.h > waterlineAt(wx, seed) - 1) return false;
   }
   for (const o of occupied) {
     if (overlaps(r, o)) return false;
@@ -549,6 +610,11 @@ function drawPath(pm: Pixmap, x0: number, seed: string): void {
       continue;
     }
     const band = pathBand(wx, seed);
+    if (band && regionWeights(wx, seed).beach > 0.62) {
+      dirtBands.push(null);
+      drawBoardwalkColumn(pm, lx, wx, band);
+      continue;
+    }
     dirtBands.push(band);
     if (!band) continue;
     const [pt, pb] = band;
@@ -587,6 +653,23 @@ function drawPath(pm: Pixmap, x0: number, seed: string): void {
         }
       }
     }
+  }
+}
+
+/**
+ * One column of boardwalk, where the path crosses the sand: planks laid
+ * across it (a dark seam every 5px), a lit top edge, a shadowed bottom
+ * edge and dark rails along both sides.
+ */
+function drawBoardwalkColumn(pm: Pixmap, lx: number, wx: number, [pt, pb]: [number, number]): void {
+  const seam = ((wx % 5) + 5) % 5 === 0;
+  for (let y = pt; y <= pb; y++) {
+    if (y < HORIZON || y >= VIEW_H) continue;
+    let c: number = seam ? C.trunkDark : C.roofOrangeDark;
+    if (y === pt || y === pb) c = C.trunkDark;
+    else if (y === pt + 1) c = C.roofOrange;
+    else if (y === pb - 1) c = C.woodDark;
+    pm.set(lx, y, c);
   }
 }
 
@@ -862,7 +945,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   // the countryside config for this chunk; a city chunk's non-town edges
   // are ordinary route
   const region = regionAt(x0 + CHUNK_W / 2, seed);
-  const cfg = REGION_CONFIGS[region === REGION_FOREST ? REGION_FOREST : REGION_ROUTE];
+  const cfg = REGION_CONFIGS[region === REGION_FOREST || region === REGION_BEACH ? region : REGION_ROUTE];
   const waterSeed = hashString(seed + ":water");
 
   // ground: flat grass, broken up by flat-colored, hard-edged patches of
@@ -878,14 +961,23 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   // Towns keep tidy lawns: no patches inside them or on the approach.
   const toneSeedA = hashString(seed + ":toneA");
   const toneSeedB = hashString(seed + ":toneB");
+  // On the coast, sand takes over from grass along a ragged, noise-shaped
+  // edge that pushes further inland the more coastal the stretch, and the
+  // sand itself has its own dune shading and little wind-ripple marks.
+  const sandSeed = hashString(seed + ":sand");
   for (let lx = 0; lx < CHUNK_W; lx++) {
     const wx = x0 + lx;
-    const { urban, forest } = regionWeights(wx, seed);
+    const { urban, forest, beach } = regionWeights(wx, seed);
     const sunAbove = forest < 0.3 && urban < 0.3 ? 0.78 : 2;
     for (let y = HORIZON; y < VIEW_H; y++) {
       let c = C.grass;
-      if (urban < 0.35) {
-        const tone = 0.8 * valueNoise2D(wx / 64, y / 22, toneSeedA) + 0.2 * valueNoise2D(wx / 12, y / 5, toneSeedB);
+      const tone = 0.8 * valueNoise2D(wx / 64, y / 22, toneSeedA) + 0.2 * valueNoise2D(wx / 12, y / 5, toneSeedB);
+      const nearSea = (y - HORIZON) / (VIEW_H - HORIZON);
+      const sandy = beach > 0.05 && beach * (0.9 + nearSea * 0.7) + (valueNoise2D(wx / 36, y / 11, sandSeed) - 0.5) * 0.6 > 0.8;
+      if (sandy) {
+        c = tone < 0.3 ? C.sandDark : tone > 0.76 ? C.sandLight : C.sand;
+        if (c === C.sand && noise2i(sandSeed, wx >> 1, y) < 0.035) c = C.sandDark;
+      } else if (urban < 0.35) {
         const grove = forest > 0 ? (groveAt(wx, y, seed) - 0.2) / 1.8 : 0;
         const shadeBelow = 0.18 + forest * (0.04 + 0.3 * grove);
         if (tone < shadeBelow) c = C.grassDark;
@@ -897,15 +989,23 @@ export function generateChunk(seed: string, k: number): ChunkResult {
 
   // grass ticks: sparse, per-tile-authored 1-2px blade marks (the "fine
   // pixel lines" texture a GBA tileset actually uses) in place of continuous
-  // per-pixel noise. Denser in forest for an undergrowth feel.
+  // per-pixel noise. Denser in forest for an undergrowth feel. Only on
+  // grass — never on sand — and the water painted next covers any below
+  // the waterline.
+  const grassy = new Set([C.grass, C.grassDark, C.grassLight]);
   for (let ty = Math.floor(HORIZON / TILE); ty * TILE < VIEW_H; ty++) {
     for (let tx = 0; tx * TILE < CHUNK_W; tx++) {
       const wx = x0 + tx * TILE + TILE / 2;
       const wy = ty * TILE;
       const { forest } = regionWeights(wx, seed);
-      if (!inTown(wx, seed) && inLake(wx, seed) && wy + TILE > LAKE_TOP) continue;
       const tileRng = keyRng(seed, "grasstick", x0 + tx * TILE, ty);
-      blit(pm, grassTickTile(tileRng, forest > 0.3), tx * TILE, wy);
+      const tick = grassTickTile(tileRng, forest > 0.3);
+      for (let y = 0; y < TILE; y++) {
+        for (let x = 0; x < TILE; x++) {
+          const c = tick.get(x, y);
+          if (c && grassy.has(pm.get(tx * TILE + x, wy + y))) pm.set(tx * TILE + x, wy + y, c);
+        }
+      }
     }
   }
 
@@ -916,30 +1016,30 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   // is the renderer's, over the spans recorded here.
   const water: WaterSpan[][] = Array.from({ length: CHUNK_W }, () => []);
   const toneSeed = hashString(seed + ":watertone");
-  const lakeSurf = (lx: number): number => {
-    const wx = x0 + lx;
-    if (!cfg.hasLake || inTown(wx, seed) || lakeDepth(wx, seed) <= 0.02) return VIEW_H;
-    return waterSurfaceY(wx, seed);
-  };
-  if (cfg.hasLake) {
+  const lakeSurf = (lx: number): number => waterlineAt(x0 + lx, seed);
+  {
     let prev = lakeSurf(-1);
-    let cur = lakeSurf(0);
+    let here = waterAt(x0, seed);
     for (let lx = 0; lx < CHUNK_W; lx++) {
       const next = lakeSurf(lx + 1);
       const wx = x0 + lx;
+      const cur = here.y;
       const lowestNeighbour = Math.min(prev, next);
       if (cur < VIEW_H || lowestNeighbour < VIEW_H) {
-        const rise = Math.max(0, Math.round(fbm1D(wx / 14, seed + ":beach", 2) * 5) - 1);
+        // a sea beach is broader and gentler than a lake's sandy lip
+        const rise = Math.max(0, Math.round(fbm1D(wx / 14, seed + ":beach", 2) * 5) - 1) + (here.sea ? 3 : 0);
         const waterTop = Math.min(cur + 3, VIEW_H);
         paintShoreColumn(pm, lx, wx, Math.min(cur, lowestNeighbour) - rise, waterTop, waterSeed);
         if (waterTop < VIEW_H) {
           paintWaterColumn(pm, lx, wx, waterTop, VIEW_H - 1, toneSeed);
-          water[lx].push([waterTop, VIEW_H - 1]);
+          water[lx].push(here.sea ? [waterTop, VIEW_H - 1, true] : [waterTop, VIEW_H - 1]);
         }
       }
       prev = cur;
-      cur = next;
+      here = lx + 1 < CHUNK_W ? waterAt(x0 + lx + 1, seed) : { y: next, sea: false };
     }
+  }
+  if (cfg.hasLake) {
 
     // lily pads drifting on the open water (not in the tapering shallows)
     const padRng = keyRng(seed, "lilypad", k);
@@ -948,7 +1048,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const lx = 8 + Math.floor(padRng() * (CHUNK_W - 16));
       const wx = x0 + lx;
       const frac = padRng();
-      if (inTown(wx, seed) || lakeDepth(wx, seed) < 0.6) continue;
+      if (inTown(wx, seed) || lakeDepth(wx, seed) < 0.6 || regionWeights(wx, seed).beach > 0.2) continue;
       const surf = waterSurfaceY(wx, seed);
       if (VIEW_H - surf < 16) continue;
       const cy = surf + 9 + Math.floor(frac * (VIEW_H - surf - 13));
@@ -1070,7 +1170,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     const foot = treeFootprint(x + w / 2, baseY, scale);
     if (!notUrbanAt(x0 + x + w / 2) || !groundFree(foot, x0, seed, occupied)) continue;
     occupied.push(foot);
-    const kind = treeKindAt(x0 + x + w / 2, baseY, cfg.coniferShare, keyRng(seed, "treekind", x0 + x, y), seed);
+    const sandy =
+      SANDS.has(pm.get(Math.round(x + w / 2), Math.min(VIEW_H - 1, baseY))) || regionWeights(x0 + x + w / 2, seed).beach > 0.55;
+    const kind = sandy ? "palm" : treeKindAt(x0 + x + w / 2, baseY, cfg.coniferShare, keyRng(seed, "treekind", x0 + x, y), seed);
     const spec = treeSpec(keyRng(seed, "treespec", x0 + x, y), kind);
     const baseRng = keyRng(seed, "treebase", x0 + x, y);
     const spot: TreeSpot = { x: x0 + x, y, scale, spec, depth: 0 };
@@ -1223,6 +1325,70 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
+  // the beach: dune grass, boulders, a striped umbrella and towel now and
+  // then, driftwood along the tideline, and shells and starfish scattered
+  // on the sand — all placed only where the ground really is sand
+  if (cfg === REGION_CONFIGS[REGION_BEACH] || regionWeights(x0 + CHUNK_W / 2, seed).beach > 0.3) {
+    const sandAt = (x: number, y: number) => SANDS.has(pm.get(x, y));
+    /** A sprite standing with its bottom row on `baseY`, at chunk-local `x`. */
+    const stand = (sprite: Pixmap, x: number, baseY: number, ground?: () => void) => {
+      const y = baseY - sprite.h + 1;
+      drawables.push({ baseY, bounds: { x, y, w: sprite.w, h: sprite.h }, ground, draw: () => blit(pm, sprite, x, y) });
+    };
+    const beachRng = keyRng(seed, "beachstuff", k);
+    const spot = () => [8 + Math.floor(beachRng() * (CHUNK_W - 16)), fieldTop + 8 + Math.floor(beachRng() * (fieldBottom - fieldTop - 8))];
+
+    for (let i = 0, n = 6 + Math.floor(beachRng() * 6); i < n; i++) {
+      const [x, y] = spot();
+      const foot: Rect = { x: x - 6, y: y - 3, w: 12, h: 4 };
+      if (!sandAt(x, y) || !groundFree(foot, x0, seed, occupied)) continue;
+      occupied.push(foot);
+      const sprite = duneGrassPixmap(keyRng(seed, "dune", k, i));
+      stand(sprite, x - DUNE_GRASS_W / 2, y);
+    }
+    for (let i = 0, n = Math.floor(beachRng() * 3); i < n; i++) {
+      const [x, y] = spot();
+      const w = 9 + Math.floor(beachRng() * 9);
+      const foot: Rect = { x: x - w / 2, y: y - 4, w, h: 5 };
+      if (!sandAt(x, y) || !groundFree(foot, x0, seed, occupied)) continue;
+      occupied.push(foot);
+      const sprite = rockPixmap(keyRng(seed, "rock", k, i), w);
+      stand(sprite, Math.round(x - sprite.w / 2), y, () => pm.fillEllipse(x + 2, y, w / 2 + 2, 2, C.sandDark));
+    }
+    if (beachRng() < 0.35) {
+      const [x, y] = spot();
+      const foot: Rect = { x: x - 18, y: y - 4, w: 36, h: 6 };
+      if (sandAt(x, y) && sandAt(x + 14, y) && groundFree(foot, x0, seed, occupied)) {
+        occupied.push(foot);
+        const sprite = umbrellaPixmap(keyRng(seed, "umbrella", k));
+        const towel = beachRng() < 0.5 ? [C.houseRoof, C.houseTrim] : [C.water, C.flowerYellow];
+        stand(sprite, x - UMBRELLA_W / 2, y, () => {
+          // a striped towel spread in the umbrella's shade, and the shade itself
+          pm.fillEllipse(x + 3, y - 1, 13, 3, C.sandDark);
+          pm.fillRect(x + 2, y - 4, 16, 6, C.black);
+          for (let tx = 0; tx < 14; tx++) pm.fillRect(x + 3 + tx, y - 3, 1, 4, tx % 4 < 2 ? towel[0] : towel[1]);
+        });
+      }
+    }
+    for (let i = 0; i < 14; i++) {
+      const [x, y] = spot();
+      const nearSea = waterlineAt(x0 + x, seed) - y;
+      if (!sandAt(x, y) || nearSea < 3 || nearSea > 40) continue;
+      if (beachRng() < 0.18) drawStarfish(pm, x, y);
+      else drawShell(pm, x, y, beachRng() < 0.4);
+    }
+    if (beachRng() < 0.3) {
+      const w = 30 + Math.floor(beachRng() * 14);
+      const lx = Math.floor(beachRng() * (CHUNK_W - w));
+      const baseY = waterlineAt(x0 + lx + w / 2, seed) - 4;
+      const foot: Rect = { x: lx, y: baseY - 10, w, h: 11 };
+      if (baseY < VIEW_H - 2 && sandAt(lx + w / 2, baseY) && groundFree(foot, x0, seed, occupied)) {
+        occupied.push(foot);
+        stand(logPixmap(keyRng(seed, "driftwood", k), w), lx, baseY + 2);
+      }
+    }
+  }
+
   // hidden items: about half of countryside chunks hide one somewhere on
   // open ground (forests sometimes two), marked only by a glint
   const itemRng = keyRng(seed, "items", k);
@@ -1243,7 +1409,7 @@ export function generateChunk(seed: string, k: number): ChunkResult {
       const wx = x0 + lx + REEDS_W / 2;
       const keep = reedRng() < 0.55;
       const sink = 5 + Math.floor(reedRng() * 6);
-      if (!keep || inTown(wx, seed) || lakeDepth(wx, seed) < 0.3) continue;
+      if (!keep || inTown(wx, seed) || lakeDepth(wx, seed) < 0.3 || regionWeights(wx, seed).beach > 0.3) continue;
       const surf = waterSurfaceY(wx, seed);
       const baseY = surf + sink;
       if (baseY + 3 > VIEW_H) continue;
@@ -1319,14 +1485,22 @@ export interface ForegroundResult {
  * giving each near object its own patch of bank means it reads as the
  * near shore in front of the water rather than a tree planted in it.
  */
-function drawNearBank(pm: Pixmap, cx: number, halfW: number): void {
-  pm.fillEllipse(cx, VIEW_H + 3, halfW + 1, 12, C.grassDark);
-  pm.fillEllipse(cx, VIEW_H + 4, halfW, 11, C.grass);
+function drawNearBank(pm: Pixmap, cx: number, halfW: number, sandy = false): void {
+  pm.fillEllipse(cx, VIEW_H + 3, halfW + 1, 12, sandy ? C.sandDark : C.grassDark);
+  pm.fillEllipse(cx, VIEW_H + 4, halfW, 11, sandy ? C.sand : C.grass);
   for (let x = Math.round(cx - halfW * 0.7); x < cx + halfW * 0.7; x += 3) {
     const dx = (x - cx) / halfW;
-    pm.set(x, Math.round(VIEW_H + 4 - 11 * Math.sqrt(1 - dx * dx)) + 1, C.grassLight);
+    pm.set(x, Math.round(VIEW_H + 4 - 11 * Math.sqrt(1 - dx * dx)) + 1, sandy ? C.sandLight : C.grassLight);
   }
 }
+
+/**
+ * How much faster the foreground layer scrolls than the world. Its own x
+ * runs at this multiple of world x, so a foreground object at layer x
+ * mostly passes over the world near x / FG_PARALLAX — that's where to ask
+ * what region or water it's in front of.
+ */
+export const FG_PARALLAX = 1.5;
 
 export function generateForeground(seed: string, k: number): ForegroundResult {
   const pm = new Pixmap(CHUNK_W, VIEW_H);
@@ -1339,11 +1513,13 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
     const w = Math.round(TREE_W * scale);
     const h = Math.round(TREE_H * scale);
     const tx = Math.floor(rng() * (CHUNK_W - w));
-    if (overWater(k * CHUNK_W + tx, w, seed)) continue;
+    const over = (k * CHUNK_W + tx) / FG_PARALLAX;
+    if (overWater(over, w / FG_PARALLAX, seed)) continue;
     // sunk just far enough that the root tips run off the bottom edge
     const ty = VIEW_H - h + Math.round(2 * scale);
-    const fgForest = regionWeights(k * CHUNK_W + tx + w / 2, seed).forest;
-    const kind: TreeKind = keyRng(seed, "fgkind", k, i)() < 0.3 * fgForest ? "conifer" : "broadleaf";
+    const { forest: fgForest, beach: fgBeach } = regionWeights(over + w / 2 / FG_PARALLAX, seed);
+    const coastal = fgBeach > 0.4;
+    const kind: TreeKind = coastal ? "palm" : keyRng(seed, "fgkind", k, i)() < 0.3 * fgForest ? "conifer" : "broadleaf";
     const spec = treeSpec(keyRng(seed, "fgspec", k, i), kind);
     const baseRng = keyRng(seed, "fgbase", k, i);
     const spot: TreeSpot = { x: k * CHUNK_W + tx, y: ty, scale, spec, depth: 0 };
@@ -1352,7 +1528,7 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
       baseY: ty + Math.round(61 * scale),
       bounds: groundedTreeBounds(tx, ty, scale),
       ground: () => {
-        drawNearBank(pm, tx + w / 2, w * 0.42);
+        drawNearBank(pm, tx + w / 2, w * 0.42, coastal);
         drawTreeShadow(pm, tx, ty, scale, baseRng);
       },
       draw: () => drawGroundedTree(pm, tx, ty, scale, spec, baseRng),
@@ -1363,7 +1539,7 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
     const scale = 1.6 + rng() * 0.5;
     const w = Math.round(32 * scale);
     const tx = Math.floor(rng() * (CHUNK_W - w));
-    if (!overWater(k * CHUNK_W + tx, w, seed)) {
+    if (!overWater((k * CHUNK_W + tx) / FG_PARALLAX, w / FG_PARALLAX, seed)) {
       const by = VIEW_H - Math.round(32 * scale);
       drawables.push({
         baseY: VIEW_H,

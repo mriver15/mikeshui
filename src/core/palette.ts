@@ -110,6 +110,10 @@ const NAMED: Array<[string, RGBA]> = [
   ["silhouette", hex("181826")],
   // rain streaks and splashes (tinted with the hour like the scene)
   ["rain", hex("b8cce0")],
+  // beach sand: dry sand, its ripple shadows, and sun-bleached highlights
+  ["sand", hex("e8d4a0")],
+  ["sandDark", hex("cdb47c")],
+  ["sandLight", hex("f6e8c4")],
 ];
 
 export const SKY_TOP = hex("62a4de");

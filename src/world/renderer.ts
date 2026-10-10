@@ -13,6 +13,7 @@ import { Backdrop } from "./backdrop";
 import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
+  FG_PARALLAX,
   GROUND_BASE,
   areaAt,
   weatherAt,
@@ -120,7 +121,7 @@ function encounterAt(t: number): Encounter | null {
 const UNSET = -32767;
 /** Base y standing in for the foreground layer: in front of everything. */
 const FRONT = 32767;
-const PARALLAX = 1.5;
+const PARALLAX = FG_PARALLAX;
 
 /**
  * Rasterizes the infinite world into an offscreen low-resolution framebuffer,

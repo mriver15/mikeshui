@@ -60,6 +60,7 @@ export interface WaterChunk {
  * - short ripple dashes on a per-row grid, each row swaying at its own
  *   pace and each dash fading in and out on its own cycle — in place of
  *   random per-pixel glints, which read as static;
+ * - on the sea, broken lines of foam rolling in toward the beach;
  * - foam lapping at the shoreline in slow travelling swells;
  * - now and then, a fish: surfacing in a spreading ring, or leaping out
  *   in an arc and splashing back in.
@@ -108,7 +109,7 @@ export function drawWaterEffects(fb: Pixmap, chunks: WaterChunk[], scrollX: numb
       const x = left + lx;
       if (x < 0 || x >= fb.w) continue;
       const wx = scrollX + x;
-      for (const [top, bottom] of water[lx]) {
+      for (const [top, bottom, sea] of water[lx]) {
         // reflections
         const axis = top - 1;
         for (let y = top; y <= Math.min(bottom, top + REFLECT_DEPTH); y++) {
@@ -140,6 +141,22 @@ export function drawWaterEffects(fb: Pixmap, chunks: WaterChunk[], scrollX: numb
           if (phase > 0.6) continue;
           const crest = local === start + (len >> 1) && phase > 0.15 && phase < 0.45;
           put(x, y, crest || px(x, y) === C.waterLight ? C.waterBright : C.waterLight);
+        }
+
+        // the sea: broken lines of foam rolling in toward the shore, each
+        // wave's crest uneven along the coast so it never reads as a ruler
+        if (sea) {
+          const reach = Math.min(30, bottom - top);
+          for (let w = 0; w < 3; w++) {
+            const crest = (noise2i(rippleSeed + 20, wx >> 5, w) * 2 - 1) * 2.5;
+            const d = reach - ((t * 5 + w * (reach / 3)) % reach) + crest;
+            if (d < 2) continue;
+            const y = top + Math.round(d);
+            if (y > bottom) continue;
+            if (noise2i(rippleSeed + 21, (wx + Math.round(t * 4)) >> 2, w + Math.floor(t / 3)) < 0.3) continue;
+            put(x, y, C.waterBright);
+            if (d > 6) put(x, y + 1, C.waterLight);
+          }
         }
 
         // lapping foam at the shoreline
