@@ -255,6 +255,23 @@ function pathCenter(x: number, seed: string): number {
   return wavy + (t.roadY - wavy) * regionWeights(x, seed).urban;
 }
 
+/** How far out from a town a forest trail starts widening back into a full path. */
+const PATH_RUNUP = 520;
+
+/**
+ * How much the woods have taken over the path at `x` (0..1): the forest
+ * weight, eased off over a long run-up to any town — so a forest trail
+ * swells gradually back into a full path as it heads for town, instead
+ * of flaring into a wedge right at the town limits.
+ */
+function pathWoodedness(x: number, seed: string): number {
+  const { forest } = regionWeights(x, seed);
+  const town = townNear(x, seed, PATH_RUNUP);
+  if (!town) return forest;
+  const d = x < town.start ? town.start - x : x >= town.end ? x - town.end + 1 : 0;
+  return forest * smoothstep(0, PATH_RUNUP, d);
+}
+
 /** Below this half-width the path has petered out entirely. */
 const PATH_MIN_HALF = 3;
 
@@ -270,12 +287,13 @@ const PATH_MIN_HALF = 3;
 function pathBand(x: number, seed: string): [number, number] | null {
   const t = townNear(x, seed);
   if (t) return [t.roadY - STREET_HALF, t.roadY + STREET_HALF];
-  const { urban, forest, beach } = regionWeights(x, seed);
+  const { urban, beach } = regionWeights(x, seed);
+  const wooded = pathWoodedness(x, seed);
   // narrower across the sand: a boardwalk, not a highway
-  const half = (26 + urban * (STREET_HALF - 26)) * (1 - smoothstep(0.3, 0.85, forest)) * (1 - 0.45 * smoothstep(0.4, 0.8, beach));
+  const half = (26 + urban * (STREET_HALF - 26)) * (1 - smoothstep(0.3, 0.85, wooded)) * (1 - 0.45 * smoothstep(0.4, 0.8, beach));
   if (half < PATH_MIN_HALF) return null;
   const c = Math.round(pathCenter(x, seed));
-  const ragged = Math.min(1, forest * 2);
+  const ragged = Math.min(1, wooded * 2);
   const pathSeed = hashString(seed + ":pathedge");
   const jt = Math.round((noise2i(pathSeed, x >> 2, 0) * 2 - 1) * 1.5 * ragged);
   const jb = Math.round((noise2i(pathSeed, x >> 2, 1) * 2 - 1) * 1.5 * ragged);
@@ -618,8 +636,7 @@ function drawPath(pm: Pixmap, x0: number, seed: string): void {
     dirtBands.push(band);
     if (!band) continue;
     const [pt, pb] = band;
-    const { forest } = regionWeights(wx, seed);
-    const creep = smoothstep(0.15, 0.8, forest) * 0.18;
+    const creep = smoothstep(0.15, 0.8, pathWoodedness(wx, seed)) * 0.18;
     for (let y = pt; y <= pb; y++) {
       if (y < HORIZON || y >= VIEW_H) continue;
       let c: number = C.path;
