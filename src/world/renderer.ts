@@ -9,6 +9,7 @@ import { Backdrop } from "./backdrop";
 import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
+  GROUND_BASE,
   generateChunk,
   generateForeground,
   CHUNK_W,
@@ -35,6 +36,8 @@ function treeSway(wx: number, time: number, lobeCount: number): number[] {
  * skips any pixel the chunk's depth buffer says was painted by something
  * nearer than `own`, so the sway can't draw over objects in front of it.
  * `chunkLeft` is the chunk's screen x; the sprite lies within the chunk.
+ * If `owners` is given, each pixel written records `ownerBase` there
+ * (the sprite's base y), for lighting.
  */
 function blitBehind(
   dst: Pixmap,
@@ -45,6 +48,8 @@ function blitBehind(
   depth: Uint16Array,
   chunkLeft: number,
   own: number,
+  owners?: Int16Array,
+  ownerBase = 0,
 ): void {
   const sw = Math.round(src.w * scale);
   const sh = Math.round(src.h * scale);
@@ -60,6 +65,7 @@ function blitBehind(
       const lx = sx - chunkLeft;
       if (lx >= 0 && lx < CHUNK_W && depth[sy * CHUNK_W + lx] > own) continue;
       dst.data[sy * dst.w + sx] = c;
+      if (owners) owners[sy * dst.w + sx] = ownerBase;
     }
   }
 }
@@ -69,6 +75,11 @@ function blitBehind(
  * together), so keep a few screens' worth either side, not hundreds.
  */
 const MAX_CACHED_CHUNKS = 64;
+
+/** `owners` value for a pixel nothing animated has drawn this frame. */
+const UNSET = -32767;
+/** Base y standing in for the foreground layer: in front of everything. */
+const FRONT = 32767;
 const PARALLAX = 1.5;
 
 /**
@@ -87,6 +98,12 @@ export class Renderer {
   private image: ImageData | null = null;
   /** Per-pixel lamplight for the current frame: 1 where a lamp lights the scene. */
   private lightMask = new Uint8Array(0);
+  /**
+   * Base y of whatever was drawn at each pixel *this frame* (swaying
+   * canopies and grass, foreground), so lamplight can tell what stands in
+   * front of a lamp; UNSET where the baked chunk shows through.
+   */
+  private owners = new Int16Array(0);
 
   constructor(
     private seed: string,
@@ -116,6 +133,7 @@ export class Renderer {
   resize(logicalWidth: number): void {
     this.fb = new Pixmap(logicalWidth, VIEW_H);
     this.lightMask = new Uint8Array(logicalWidth * VIEW_H);
+    this.owners = new Int16Array(logicalWidth * VIEW_H);
     this.image = null;
     this.off.width = logicalWidth;
     this.off.height = VIEW_H;
@@ -167,7 +185,9 @@ export class Renderer {
     // canopies, so it can reflect them) — all before the foreground goes
     // on top, so none of them can paint over it
     const visible = this.chunkRange(first, last, (k) => this.getChunk(k));
-    this.drawAnimated(visible, scrollX, time);
+    const lit = pal.darkness > 0.15 && visible.some(({ chunk }) => chunk.lights.length > 0);
+    if (lit) this.owners.fill(UNSET);
+    this.drawAnimated(visible, scrollX, time, lit ? this.owners : undefined);
     drawWaterEffects(fb, visible.map(({ k, chunk }) => ({ k, water: chunk.water })), scrollX, time, this.seed);
 
     // foreground (parallax: scrolls faster, drawn last)
@@ -177,9 +197,27 @@ export class Renderer {
     for (let k = fgFirst; k <= fgLast; k++) {
       blit(fb, this.getFgChunk(k).pixmap, k * CHUNK_W - fgScroll, 0);
     }
-    this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time);
+    this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, lit ? this.owners : undefined, true);
 
-    this.present(pal, visible, scrollX);
+    this.present(pal, lit ? visible : [], scrollX, fgScroll);
+  }
+
+  /**
+   * Base y of whatever is on screen at (x, y): something drawn this frame
+   * (canopy, grass, foreground), else the foreground's baked layer, else
+   * the world chunk's object there — or GROUND_BASE for bare ground.
+   */
+  private ownerBase(x: number, y: number, scrollX: number, fgScroll: number): number {
+    const o = this.owners[y * this.fb.w + x];
+    if (o !== UNSET) return o;
+    const fx = x + fgScroll;
+    const fg = this.fgChunks.get(Math.floor(fx / CHUNK_W));
+    if (fg && fg.pixmap.get(fx - Math.floor(fx / CHUNK_W) * CHUNK_W, y) !== 0) return FRONT;
+    const wx = x + scrollX;
+    const k = Math.floor(wx / CHUNK_W);
+    const chunk = this.chunks.get(k);
+    if (!chunk) return GROUND_BASE;
+    return chunk.depthBase[chunk.depth[y * CHUNK_W + (wx - k * CHUNK_W)]];
   }
 
   /**
@@ -225,7 +263,13 @@ export class Renderer {
    * chunk's depth buffer says nothing nearer was baked (see `blitBehind`).
    * Sprites never straddle chunks, so per-chunk ordering is enough.
    */
-  private drawAnimated(chunks: Array<{ k: number; chunk: ChunkResult | ForegroundResult }>, scrollX: number, time: number): void {
+  private drawAnimated(
+    chunks: Array<{ k: number; chunk: ChunkResult | ForegroundResult }>,
+    scrollX: number,
+    time: number,
+    owners?: Int16Array,
+    front = false,
+  ): void {
     const fb = this.fb;
     for (const { k, chunk } of chunks) {
       const chunkLeft = k * CHUNK_W - scrollX;
@@ -239,7 +283,7 @@ export class Renderer {
             draw: () => {
               const lean = Math.sin(time / 900 + spot.x * 0.05) * 2.4;
               const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
-              blitBehind(fb, tallGrassTile(rng, lean), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
+              blitBehind(fb, tallGrassTile(rng, lean), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth, owners, front ? FRONT : spot.y + 30);
             },
           });
         }
@@ -250,7 +294,7 @@ export class Renderer {
             depth: spot.depth,
             draw: () => {
               const sway = treeSway(spot.x, time, BERRY_TREE_LOBE_COUNT);
-              blitBehind(fb, berryCanopyPixmap(sway), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth);
+              blitBehind(fb, berryCanopyPixmap(sway), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth, owners, front ? FRONT : spot.y + 61);
             },
           });
         }
@@ -262,7 +306,8 @@ export class Renderer {
           depth: spot.depth,
           draw: () => {
             const sway = treeSway(spot.x, time, treeLobeCount(spot.spec));
-            blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth);
+            const base = front ? FRONT : spot.y + Math.round(61 * spot.scale);
+            blitBehind(fb, treeCanopyPixmap(spot.spec, sway), screenX, spot.y, spot.scale, chunk.depth, chunkLeft, spot.depth, owners, base);
           },
         });
       }
@@ -341,20 +386,19 @@ export class Renderer {
    * (the lantern's glow and a pool on the ground below), which takes the
    * warm lamplit palette instead — only once it's dark enough to matter.
    */
-  private present(pal: DayPalette, visible: Array<{ k: number; chunk: ChunkResult }>, scrollX: number): void {
+  private present(pal: DayPalette, visible: Array<{ k: number; chunk: ChunkResult }>, scrollX: number, fgScroll: number): void {
     const fb = this.fb;
     if (!this.image || this.image.width !== fb.w) this.image = this.offctx.createImageData(fb.w, fb.h);
     const data32 = new Uint32Array(this.image.data.buffer);
     const src = fb.data;
-    const lamps = pal.darkness > 0.15 && visible.some(({ chunk }) => chunk.lights.length > 0);
-    if (lamps) {
+    if (visible.length > 0) {
       const mask = this.lightMask;
       mask.fill(0);
       for (const { k, chunk } of visible) {
         for (const l of chunk.lights) {
           const x = k * CHUNK_W - scrollX + l.x;
-          this.lightEllipse(x, l.headY, 9, 9, 0.55);
-          this.lightEllipse(x, l.baseY, 30 * pal.darkness + 6, 10 * pal.darkness + 2, 0.5);
+          this.lightEllipse(x, l.headY, 9, 9, 0.55, l.baseY, scrollX, fgScroll);
+          this.lightEllipse(x, l.baseY, 30 * pal.darkness + 6, 10 * pal.darkness + 2, 0.5, l.baseY, scrollX, fgScroll);
         }
       }
       for (let i = 0; i < src.length; i++) data32[i] = mask[i] ? pal.lit[src[i]] : pal.base[src[i]];
@@ -366,8 +410,24 @@ export class Renderer {
     this.octx.drawImage(this.off, 0, 0, this.canvas.width, this.canvas.height);
   }
 
-  /** Mark an elliptical pool of lamplight: solid inside `inner` (0..1 of the radius), dithered out to the edge. */
-  private lightEllipse(cx: number, cy: number, rx: number, ry: number, inner: number): void {
+  /**
+   * Mark an elliptical pool of lamplight: solid inside `inner` (0..1 of
+   * the radius), dithered out to the edge — but only on pixels of things
+   * at or behind the lamp (base y no lower than `lampBase`): the ground,
+   * the lamp itself, house walls behind it. A tree or bush standing in
+   * front of the lamp stays in the dark, rather than the light being
+   * painted over it.
+   */
+  private lightEllipse(
+    cx: number,
+    cy: number,
+    rx: number,
+    ry: number,
+    inner: number,
+    lampBase: number,
+    scrollX: number,
+    fgScroll: number,
+  ): void {
     const fb = this.fb;
     for (let y = Math.max(0, Math.floor(cy - ry)); y <= Math.min(fb.h - 1, cy + ry); y++) {
       for (let x = Math.max(0, Math.floor(cx - rx)); x <= Math.min(fb.w - 1, cx + rx); x++) {
@@ -375,7 +435,8 @@ export class Renderer {
         const dy = (y + 0.5 - cy) / ry;
         const d = Math.sqrt(dx * dx + dy * dy);
         if (d > 1) continue;
-        if (d <= inner || ditherThreshold(x, y) > (d - inner) / (1 - inner)) this.lightMask[y * fb.w + x] = 1;
+        if (d > inner && ditherThreshold(x, y) <= (d - inner) / (1 - inner)) continue;
+        if (this.ownerBase(x, y, scrollX, fgScroll) <= lampBase) this.lightMask[y * fb.w + x] = 1;
       }
     }
   }

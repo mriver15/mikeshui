@@ -304,6 +304,12 @@ export interface ChunkResult {
    * or bush can't paint over it.
    */
   depth: Uint16Array;
+  /**
+   * Base y of the object behind each depth value (`GROUND_BASE` for 0):
+   * how near it stands, comparable between chunks — used to light only
+   * what's behind a street lamp.
+   */
+  depthBase: Int16Array;
   tallGrass: TallGrassSpot[];
   trees: TreeSpot[];
   berryTrees: BerryTreeSpot[];
@@ -330,14 +336,18 @@ interface Drawable {
  * Draw `items` back to front (by base y; ties keep insertion order) and
  * return a depth buffer recording which item last painted each pixel —
  * found by diffing each item's bounds before and after it draws, which
- * keeps every sprite routine oblivious to depth.
+ * keeps every sprite routine oblivious to depth — plus each depth's base
+ * y, which (unlike the depth itself) compares across chunks.
  */
-function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
+function drawSorted(pm: Pixmap, items: Drawable[]): { depth: Uint16Array; depthBase: Int16Array } {
   const depth = new Uint16Array(pm.w * pm.h);
+  const depthBase = new Int16Array(items.length + 1);
+  depthBase[0] = GROUND_BASE;
   for (const item of items) item.ground?.();
   const order = items.map((item, i) => ({ item, i })).sort((a, b) => a.item.baseY - b.item.baseY || a.i - b.i);
   order.forEach(({ item }, n) => {
     const d = n + 1;
+    depthBase[d] = item.baseY;
     const x0 = Math.max(0, Math.floor(item.bounds.x));
     const y0 = Math.max(0, Math.floor(item.bounds.y));
     const x1 = Math.min(pm.w, Math.ceil(item.bounds.x + item.bounds.w));
@@ -360,8 +370,11 @@ function drawSorted(pm: Pixmap, items: Drawable[]): Uint16Array {
     }
     if (item.spot) item.spot.depth = d;
   });
-  return depth;
+  return { depth, depthBase };
 }
+
+/** `depthBase` entry for bare ground: behind everything that stands on it. */
+export const GROUND_BASE = -32768;
 
 /** `groveAt` runs per ground pixel in forest, so its noise seed is hashed once per world seed, not per call. */
 const groveSeeds = new Map<string, number>();
@@ -1214,9 +1227,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   const lights: LampLight[] = [];
   placeTown(pm, x0, seed, drawables, trees, lights);
 
-  const depth = drawSorted(pm, drawables);
+  const { depth, depthBase } = drawSorted(pm, drawables);
 
-  return { pixmap: pm, depth, water, lights, tallGrass, trees, berryTrees };
+  return { pixmap: pm, depth, depthBase, water, lights, tallGrass, trees, berryTrees };
 }
 
 /**
@@ -1226,8 +1239,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
  */
 export interface ForegroundResult {
   pixmap: Pixmap;
-  /** Same meaning as `ChunkResult.depth`. */
+  /** Same meaning as `ChunkResult.depth` and `ChunkResult.depthBase`. */
   depth: Uint16Array;
+  depthBase: Int16Array;
   trees: TreeSpot[];
 }
 
@@ -1295,6 +1309,6 @@ export function generateForeground(seed: string, k: number): ForegroundResult {
       });
     }
   }
-  const depth = drawSorted(pm, drawables);
-  return { pixmap: pm, depth, trees };
+  const { depth, depthBase } = drawSorted(pm, drawables);
+  return { pixmap: pm, depth, depthBase, trees };
 }
