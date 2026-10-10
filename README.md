@@ -1,5 +1,9 @@
 # Emerald Field
 
+[![CI](https://github.com/mriver15/mikeshui/actions/workflows/ci.yml/badge.svg)](https://github.com/mriver15/mikeshui/actions/workflows/ci.yml)
+
+**[▶ Wander it live](https://mriver15.github.io/mikeshui/)**
+
 An endless, procedurally generated pixel-art landscape you can wander through, in the spirit of the Game Boy Advance era of monster-collecting RPGs. Every route, grove, town, lake, cloud and mountain range comes from a single seed. There are no image assets: everything is drawn in code, pixel by pixel, from a small indexed palette (about 70 colors plus a 16-step sky gradient).
 
 ![A sunny route: groves of broadleaf and conifer trees around a lake, with forested hills and snow-capped mountains behind](docs/images/hero.png)
@@ -77,6 +81,8 @@ URL parameters:
 - `?time=dawn|day|dusk|night` sets the starting time of day.
 
 ## Running it
+
+The live demo at https://mriver15.github.io/mikeshui/ is rebuilt and redeployed on every push to `main`, once the tests and build pass (see `.github/workflows/ci.yml`). To run it locally:
 
 Requires Node.js 22.12 or newer (for the Vitest version used).
 
