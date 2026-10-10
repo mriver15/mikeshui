@@ -495,7 +495,7 @@ export const LAMP_H = 64;
  */
 export function streetlampPixmap(rng: RNG): Pixmap {
   const p = new Pixmap(LAMP_W, LAMP_H);
-  const glow = rng() < 0.6 ? C.flowerYellow : C.houseWindow;
+  const glow = rng() < 0.6 ? C.lampGlow : C.houseWindow;
   const cx = LAMP_W / 2;
   p.fillRect(cx - 5, 2, 10, 3, C.black);
   p.fillRect(cx - 4, 0, 8, 3, C.black);

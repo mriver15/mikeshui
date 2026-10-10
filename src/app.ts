@@ -20,6 +20,20 @@ const FOLLOW = 14;
 /** How far one click of an arrow button glides. */
 const BUTTON_STEP = 96;
 
+/** One full day, in ms of real time. */
+const DAY_LENGTH = 8 * 60 * 1000;
+
+/**
+ * Named times of day, as day phases (0 midnight, 0.5 noon): what the
+ * time button steps through and the `?time=` URL parameter accepts.
+ */
+const TIMES: Array<{ name: string; icon: string; phase: number }> = [
+  { name: "dawn", icon: "◒", phase: 0.26 },
+  { name: "day", icon: "☀", phase: 0.42 },
+  { name: "dusk", icon: "◓", phase: 0.75 },
+  { name: "night", icon: "☾", phase: 0.95 },
+];
+
 /**
  * Scroll motion: the view eases toward a target position instead of
  * jumping, holding an arrow key accelerates the target to a cruising
@@ -61,6 +75,7 @@ export function boot(root: HTMLElement): void {
       <div class="controls">
         <button id="left">◀</button>
         <button id="right">▶</button>
+        <button id="time">☀ day</button>
         <button id="new">✦ new</button>
         <button id="dl">↓ png</button>
       </div>
@@ -97,13 +112,35 @@ export function boot(root: HTMLElement): void {
     });
   };
 
-  // Continuous render loop (drives scrolling, the water, sway and drifting clouds).
+  // time of day: a slow cycle from a starting hour (late morning, or
+  // ?time=dawn|day|dusk|night); the time button jumps to the next one
+  const startName = new URLSearchParams(window.location.search).get("time");
+  let phaseOffset = TIMES.find((t) => t.name === startName)?.phase ?? 0.38;
+  const phaseAt = (time: number) => (((time / DAY_LENGTH + phaseOffset) % 1) + 1) % 1;
+  const timeButton = ui.querySelector("#time") as HTMLButtonElement;
+  let shownTime = "";
+  const showTime = (phase: number) => {
+    // the latest named time at or before this phase, wrapping past midnight
+    const current = [...TIMES].reverse().find((t) => t.phase <= phase) ?? TIMES[TIMES.length - 1];
+    if (current.name === shownTime) return;
+    shownTime = current.name;
+    timeButton.textContent = `${current.icon} ${current.name}`;
+  };
+  timeButton.addEventListener("click", () => {
+    const now = phaseAt(performance.now());
+    const next = TIMES.find((t) => t.phase > now + 0.01) ?? TIMES[0];
+    phaseOffset += (((next.phase - now) % 1) + 1) % 1;
+  });
+
+  // Continuous render loop (drives scrolling, time of day, the water, sway and drifting clouds).
   let lastTime = 0;
   const loop = (time: number) => {
     const dt = Math.min(0.05, lastTime ? (time - lastTime) / 1000 : 0);
     lastTime = time;
     step(motion, dt);
-    renderer.draw(Math.round(motion.x), time);
+    const phase = phaseAt(time);
+    showTime(phase);
+    renderer.draw(Math.round(motion.x), time, phase);
     schedulePrefetch();
     requestAnimationFrame(loop);
   };

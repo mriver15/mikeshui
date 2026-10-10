@@ -91,10 +91,15 @@ const NAMED: Array<[string, RGBA]> = [
   ["berryGreen", hex("41b483")],
   ["skin", hex("ffd5b4")],
   ["skinShade", hex("ffbd83")],
+  // light sources: these keep their color through dusk and night instead
+  // of being tinted with the rest of the scene (see core/daylight.ts)
+  ["lampGlow", hex("ffe8a0")],
+  ["star", hex("fff6dc")],
+  ["moon", hex("f4f0d8")],
 ];
 
-const SKY_TOP = hex("62a4de");
-const SKY_HORIZON = hex("dee6ee");
+export const SKY_TOP = hex("62a4de");
+export const SKY_HORIZON = hex("dee6ee");
 const SKY_STEPS = 16;
 
 /** Flattened RGBA bytes indexed by palette index. */

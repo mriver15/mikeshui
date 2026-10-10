@@ -1,7 +1,8 @@
 import { Pixmap, blit } from "../core/pixmap";
-import { SKY, RGBA32 } from "../core/palette";
-import { ditherPick } from "../core/dither";
-import { keyRng } from "../core/prng";
+import { SKY, C } from "../core/palette";
+import { ditherPick, ditherThreshold } from "../core/dither";
+import { keyRng, noise2i, hashString } from "../core/prng";
+import { dayPalette, type DayPalette } from "../core/daylight";
 import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
 import { Backdrop } from "./backdrop";
@@ -83,6 +84,9 @@ export class Renderer {
   private off: HTMLCanvasElement;
   private offctx: CanvasRenderingContext2D;
   private octx: CanvasRenderingContext2D;
+  private image: ImageData | null = null;
+  /** Per-pixel lamplight for the current frame: 1 where a lamp lights the scene. */
+  private lightMask = new Uint8Array(0);
 
   constructor(
     private seed: string,
@@ -111,12 +115,20 @@ export class Renderer {
 
   resize(logicalWidth: number): void {
     this.fb = new Pixmap(logicalWidth, VIEW_H);
+    this.lightMask = new Uint8Array(logicalWidth * VIEW_H);
+    this.image = null;
     this.off.width = logicalWidth;
     this.off.height = VIEW_H;
   }
 
-  draw(scrollX: number, time: number): void {
+  /**
+   * Render one frame. `phase` is the time of day, 0..1 (0 midnight, 0.25
+   * dawn, 0.5 noon, 0.75 dusk): the scene is drawn once in palette
+   * indices, then colored for that hour as it's presented.
+   */
+  draw(scrollX: number, time: number, phase = 0.5): void {
     const fb = this.fb;
+    const pal = dayPalette(phase);
 
     // sky gradient (dithered for a smooth, band-free blend)
     for (let y = 0; y < HORIZON; y++) {
@@ -129,6 +141,8 @@ export class Renderer {
         fb.data[y * fb.w + x] = ditherPick(a, b, frac, x, y);
       }
     }
+
+    if (pal.darkness > 0.2) this.drawNightSky(scrollX, time, phase, pal.darkness);
 
     // the backdrop, back to front, with the cloud layers slotted between
     // it: far clouds behind the mountains, mist pooling at the feet of
@@ -165,7 +179,43 @@ export class Renderer {
     }
     this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time);
 
-    this.present();
+    this.present(pal, visible, scrollX);
+  }
+
+  /**
+   * Stars and the moon, drawn into the sky before the clouds and hills so
+   * both pass in front of them. Stars sit almost still (a whisper of
+   * parallax) and twinkle; their number grows as night deepens. The moon
+   * crosses the sky over the night.
+   */
+  private drawNightSky(scrollX: number, time: number, phase: number, darkness: number): void {
+    const fb = this.fb;
+    const starSeed = hashString(this.seed + ":stars");
+    const u0 = Math.round(scrollX * 0.02);
+    const density = 0.0035 * Math.min(1, (darkness - 0.2) / 0.6);
+    const tick = Math.floor(time / 450);
+    for (let y = 0; y < HORIZON - 10; y++) {
+      for (let x = 0; x < fb.w; x++) {
+        const n = noise2i(starSeed, u0 + x, y);
+        if (n >= density) continue;
+        if (noise2i(starSeed + 1, u0 + x, tick + y) < 0.12) continue;
+        fb.data[y * fb.w + x] = C.star;
+        if (n < density * 0.12) {
+          // a few bright ones get a little cross
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const sx = x + dx;
+            const sy = y + dy;
+            if (sx >= 0 && sx < fb.w && sy >= 0) fb.data[sy * fb.w + sx] = C.star;
+          }
+        }
+      }
+    }
+    const t = (((phase - 0.72) % 1) + 1) % 1 / 0.56;
+    if (t > 1) return;
+    const mx = Math.round(fb.w * (0.9 - 0.8 * t));
+    const my = Math.round(40 - Math.sin(t * Math.PI) * 24);
+    fb.fillCircle(mx, my, 7.5, C.moon);
+    for (const [dx, dy, r] of [[-2, -2, 1.6], [2, 1, 1.2], [-1, 3, 0.9]]) fb.fillCircle(mx + dx, my + dy, r, C.cloudShade);
   }
 
   /**
@@ -285,15 +335,49 @@ export class Renderer {
     return c;
   }
 
-  private present(): void {
-    const img = this.offctx.createImageData(this.off.width, this.off.height);
-    const data32 = new Uint32Array(img.data.buffer);
-    const src = this.fb.data;
-    for (let i = 0; i < src.length; i++) {
-      data32[i] = RGBA32[src[i]];
+  /**
+   * Color the frame for the hour and put it on screen: each palette index
+   * maps through the hour's palette, except inside a street lamp's light
+   * (the lantern's glow and a pool on the ground below), which takes the
+   * warm lamplit palette instead — only once it's dark enough to matter.
+   */
+  private present(pal: DayPalette, visible: Array<{ k: number; chunk: ChunkResult }>, scrollX: number): void {
+    const fb = this.fb;
+    if (!this.image || this.image.width !== fb.w) this.image = this.offctx.createImageData(fb.w, fb.h);
+    const data32 = new Uint32Array(this.image.data.buffer);
+    const src = fb.data;
+    const lamps = pal.darkness > 0.15 && visible.some(({ chunk }) => chunk.lights.length > 0);
+    if (lamps) {
+      const mask = this.lightMask;
+      mask.fill(0);
+      for (const { k, chunk } of visible) {
+        for (const l of chunk.lights) {
+          const x = k * CHUNK_W - scrollX + l.x;
+          this.lightEllipse(x, l.headY, 9, 9, 0.55);
+          this.lightEllipse(x, l.baseY, 30 * pal.darkness + 6, 10 * pal.darkness + 2, 0.5);
+        }
+      }
+      for (let i = 0; i < src.length; i++) data32[i] = mask[i] ? pal.lit[src[i]] : pal.base[src[i]];
+    } else {
+      for (let i = 0; i < src.length; i++) data32[i] = pal.base[src[i]];
     }
-    this.offctx.putImageData(img, 0, 0);
+    this.offctx.putImageData(this.image, 0, 0);
     this.octx.imageSmoothingEnabled = false;
     this.octx.drawImage(this.off, 0, 0, this.canvas.width, this.canvas.height);
   }
+
+  /** Mark an elliptical pool of lamplight: solid inside `inner` (0..1 of the radius), dithered out to the edge. */
+  private lightEllipse(cx: number, cy: number, rx: number, ry: number, inner: number): void {
+    const fb = this.fb;
+    for (let y = Math.max(0, Math.floor(cy - ry)); y <= Math.min(fb.h - 1, cy + ry); y++) {
+      for (let x = Math.max(0, Math.floor(cx - rx)); x <= Math.min(fb.w - 1, cx + rx); x++) {
+        const dx = (x + 0.5 - cx) / rx;
+        const dy = (y + 0.5 - cy) / ry;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d > 1) continue;
+        if (d <= inner || ditherThreshold(x, y) > (d - inner) / (1 - inner)) this.lightMask[y * fb.w + x] = 1;
+      }
+    }
+  }
+
 }

@@ -40,6 +40,7 @@ import {
   HEDGE_H,
   SIGN_W,
   LAMP_W,
+  LAMP_H,
 } from "../sprites/town";
 import { paintWaterColumn, paintShoreColumn, pondRows, type Pond, type WaterSpan } from "./water";
 import { findTown, ROAD_HALF, STREET_HALF, type Town, type Lot } from "./town";
@@ -278,8 +279,17 @@ export interface BerryTreeSpot {
   depth: number;
 }
 
+/** A street lamp, for the renderer's light pools after dark (chunk-local x). */
+export interface LampLight {
+  x: number;
+  /** Lantern centre and the ground row the lamp stands on. */
+  headY: number;
+  baseY: number;
+}
+
 export interface ChunkResult {
   pixmap: Pixmap;
+  lights: LampLight[];
   /**
    * Open water per column (index = chunk-local x): lake and pond spans,
    * for the renderer's per-frame reflections, ripples and foam.
@@ -554,7 +564,14 @@ function drawStreetColumn(pm: Pixmap, lx: number, wx: number, town: Town, asphal
  * `./town`), so a building straddling two chunks is drawn — clipped —
  * by both, from the same plan.
  */
-function placeTown(pm: Pixmap, x0: number, seed: string, drawables: Drawable[], trees: TreeSpot[]): void {
+function placeTown(
+  pm: Pixmap,
+  x0: number,
+  seed: string,
+  drawables: Drawable[],
+  trees: TreeSpot[],
+  lights: LampLight[],
+): void {
   const town = townNear(x0 + CHUNK_W / 2, seed, CHUNK_W);
   if (!town) return;
   const near = (wx: number, w: number) => wx < x0 + CHUNK_W + 128 && wx + w > x0 - 128;
@@ -612,10 +629,14 @@ function placeTown(pm: Pixmap, x0: number, seed: string, drawables: Drawable[], 
   }
 
   // street lamps at a steady rhythm along both sidewalks, staggered
+  const lamp = (wx: number, baseY: number) => {
+    if (!near(wx, LAMP_W)) return;
+    stand(streetlampPixmap(keyRng(seed, "lamp", wx)), wx - LAMP_W / 2, baseY);
+    lights.push({ x: wx - x0, headY: baseY - LAMP_H + 11, baseY });
+  };
   for (let wx = town.start + 64; wx < town.end - 32; wx += 240) {
-    if (near(wx, LAMP_W)) stand(streetlampPixmap(keyRng(seed, "lamp", wx)), wx - LAMP_W / 2, sidewalkTop + 3);
-    const sx = wx + 120;
-    if (sx < town.end - 32 && near(sx, LAMP_W)) stand(streetlampPixmap(keyRng(seed, "lamp", sx)), sx - LAMP_W / 2, sidewalkBottom - 1);
+    lamp(wx, sidewalkTop + 3);
+    if (wx + 120 < town.end - 32) lamp(wx + 120, sidewalkBottom - 1);
   }
 
   // town-limits signs beside the approaching path at each end
@@ -1190,11 +1211,12 @@ export function generateChunk(seed: string, k: number): ChunkResult {
     }
   }
 
-  placeTown(pm, x0, seed, drawables, trees);
+  const lights: LampLight[] = [];
+  placeTown(pm, x0, seed, drawables, trees, lights);
 
   const depth = drawSorted(pm, drawables);
 
-  return { pixmap: pm, depth, water, tallGrass, trees, berryTrees };
+  return { pixmap: pm, depth, water, lights, tallGrass, trees, berryTrees };
 }
 
 /**
