@@ -70,7 +70,7 @@ export function boot(root: HTMLElement): void {
   ui.innerHTML = `
     <div class="panel">
       <div class="title">EMERALD FIELD</div>
-      <div class="subtitle">procedural Hoenn-inspired landscape</div>
+      <div class="subtitle">procedural pixel-art landscape</div>
       <div class="seed">seed&nbsp;<span id="seed">${seed}</span></div>
       <div class="controls">
         <button id="left">◀</button>

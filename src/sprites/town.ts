@@ -52,7 +52,7 @@ const HOUSE_STYLES: HouseStyle[] = [
  * A building of the given kind. Houses (one- and two-storey) are varied
  * from `rng` — palette, door position, window layout, chimney, flower
  * box — so a street of them doesn't read as one building copy-pasted; the
- * Poké Center and Mart keep their fixed, recognizable looks since their
+ * healing center and the mart keep their fixed, recognizable looks since their
  * colors are their signage.
  */
 export function buildingPixmap(kind: BuildingKind, rng: RNG): BuildingSprite {
@@ -193,11 +193,10 @@ const GLYPHS: Record<string, string[]> = {
   A: ["010", "101", "111", "101", "101"],
   C: ["011", "100", "100", "100", "011"],
   E: ["111", "100", "110", "100", "111"],
-  K: ["101", "101", "110", "101", "101"],
+  H: ["101", "101", "111", "101", "101"],
+  L: ["100", "100", "100", "100", "111"],
   M: ["10001", "11011", "10101", "10001", "10001"],
   N: ["1001", "1101", "1011", "1001", "1001"],
-  O: ["010", "101", "101", "101", "010"],
-  P: ["110", "101", "110", "100", "100"],
   R: ["110", "101", "110", "101", "101"],
   T: ["111", "010", "010", "010", "010"],
   " ": ["0", "0", "0", "0", "0"],
@@ -250,26 +249,38 @@ function hipRoof(p: Pixmap, x0: number, x1: number, top: number, front: number, 
   p.fillRect(x0, front + 1, x1 - x0 + 1, 1, s.roof);
 }
 
-/** A big pokeball emblem: outlined, red top half, white bottom, banded, with a button and a glint. */
-function pokeball(p: Pixmap, cx: number, cy: number, r: number): void {
+/**
+ * The healing center's emblem: an outlined white badge with a red heart
+ * on it, lit at the upper left — an original mark, so the building reads
+ * as "the place that heals your team" without borrowing anyone's logo.
+ */
+function heartBadge(p: Pixmap, cx: number, cy: number, r: number): void {
   p.fillCircle(cx, cy, r + 1, C.black);
   p.fillCircle(cx, cy, r, C.houseTrim);
-  for (let y = Math.floor(cy - r); y < cy; y++) {
-    for (let x = Math.floor(cx - r); x <= cx + r; x++) {
-      const dx = x + 0.5 - cx;
-      const dy = y + 0.5 - cy;
-      if (dx * dx + dy * dy <= r * r) p.set(x, y, C.houseRoof);
-    }
-  }
-  p.fillCircle(cx - r * 0.4, cy - r * 0.5, r * 0.25, C.houseRoofLight);
-  p.fillRect(Math.round(cx - r), Math.round(cy) - 1, Math.round(2 * r) + 1, 2, C.black);
-  p.fillCircle(cx, cy, r * 0.38, C.black);
-  p.fillCircle(cx, cy, r * 0.24, C.houseTrim);
+  p.fillCircle(cx - r * 0.3, cy - r * 0.35, r * 0.75, C.houseTrim);
+  const h = r * 0.55;
+  p.fillCircle(cx - h * 0.5, cy - h * 0.25, h * 0.55, C.houseRoof);
+  p.fillCircle(cx + h * 0.5, cy - h * 0.25, h * 0.55, C.houseRoof);
+  p.fillTriangle(cx - h * 1.05, cy - h * 0.05, cx + h * 1.05, cy - h * 0.05, cx, cy + h * 1.05, C.houseRoof);
+  p.set(Math.round(cx - h * 0.65), Math.round(cy - h * 0.5), C.houseRoofLight);
+  p.set(Math.round(cx - h * 0.45), Math.round(cy - h * 0.6), C.houseRoofLight);
+}
+
+/** The mart's sign icon: a little white shopping bag with a handle. */
+function bagIcon(p: Pixmap, cx: number, cy: number): void {
+  const x = Math.round(cx - 4);
+  const y = Math.round(cy - 3);
+  p.fillRect(x - 1, y - 1, 10, 9, C.black);
+  p.fillRect(x, y, 8, 7, C.houseTrim);
+  p.fillRect(x, y, 8, 1, C.houseWall);
+  p.fillRect(x + 2, y - 4, 4, 1, C.black);
+  p.fillRect(x + 1, y - 3, 1, 3, C.black);
+  p.fillRect(x + 6, y - 3, 1, 3, C.black);
 }
 
 /**
- * Poké Center, after the Gen-3 look: a wide red hip-roofed hall with a
- * raised central block carrying a big pokeball emblem, a red band
+ * Healing center, after the Gen-3 look: a wide red hip-roofed hall with a
+ * raised central block carrying a big heart-badge emblem, a red band
  * running along the white walls, a lettered sign over a canopy and the
  * sliding glass doors, and framed windows along both wings.
  */
@@ -293,13 +304,13 @@ function centerPixmap(): BuildingSprite {
   p.fillRect(blockL, 15, blockR - blockL, wallTop - 14, s.wall);
   p.fillRect(blockR - 6, 15, 6, wallTop - 14, s.wallShade);
   hipRoof(p, blockL - 3, blockR + 3, 1, 12, s, 6);
-  pokeball(p, cx, 28, 10);
+  heartBadge(p, cx, 28, 10);
 
-  // sign plate over the canopy: "POKEMON CENTER" in two lines
+  // sign plate over the canopy: "HEAL CENTER" in two lines
   const plateTop = wallTop + 14;
   p.fillRect(cx - 21, plateTop, 42, 15, C.black);
   p.fillRect(cx - 20, plateTop + 1, 40, 13, C.houseTrim);
-  drawText(p, "POKEMON", cx, plateTop + 2, s.roof);
+  drawText(p, "HEAL", cx, plateTop + 2, s.roof);
   drawText(p, "CENTER", cx, plateTop + 8, s.roof);
 
   // canopy over the doors, casting a shadow line onto the wall
@@ -318,8 +329,8 @@ function centerPixmap(): BuildingSprite {
 }
 
 /**
- * Poké Mart, after the Gen-3 look: a blue hip roof, a long signboard
- * with a pokeball icon and "MART" in big letters, a blue-and-white
+ * Mart, after the Gen-3 look: a blue hip roof, a long signboard
+ * with a shopping-bag icon and "MART" in big letters, a blue-and-white
  * striped awning with a scalloped edge over the sliding doors, and shop
  * windows with stocked shelves on both sides.
  */
@@ -337,7 +348,7 @@ function martPixmap(): BuildingSprite {
   p.fillRect(cx - 34, signTop, 68, 16, C.black);
   p.fillRect(cx - 33, signTop + 1, 66, 14, s.roof);
   p.fillRect(cx - 33, signTop + 1, 66, 2, s.roofLight);
-  pokeball(p, cx - 22, signTop + 8, 4.5);
+  bagIcon(p, cx - 22, signTop + 8);
   drawText(p, "MART", cx + 7, signTop + 3, C.houseTrim, 2);
 
   // striped awning with a scalloped lower edge

@@ -99,7 +99,7 @@ export function findTown(
 /**
  * Lay out a town's lots left to right. North side: mostly houses (one-
  * and two-storey) with the odd park, and — in any town long enough — one
- * Poké Center and one Mart placed side by side at the first lot past the
+ * healing center and one Mart placed side by side at the first lot past the
  * middle of town. Each building lot gets a yard margin beside the
  * building (room for a tree) and small gaps between lots. South side: a
  * looser rhythm of gardens, trees, bench nooks and plain fenced lawns.

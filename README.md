@@ -10,7 +10,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 
 ![A forest route with a fading trail, mixed groves and a reed-fringed pond](docs/images/forest.png)
 
-**Towns.** Planned towns along a paved street: houses with fenced yards and mailboxes, a Center and a Mart side by side mid-town, street lamps, gardens and bench nooks.
+**Towns.** Planned towns along a paved street: houses with fenced yards and mailboxes, a healing center and a mart side by side mid-town, street lamps, gardens and bench nooks.
 
 ![A town street at midday](docs/images/town.png)
 
