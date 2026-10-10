@@ -67,6 +67,7 @@ const KEYS: Light[] = [
 const EMISSIVE = new Set([
   C.lampGlow, C.star, C.moon,
   C.uiWood, C.uiWoodDark, C.uiStone, C.uiStoneDark, C.uiFill, C.uiText, C.uiShadow,
+  C.silhouette,
 ]);
 
 /** What a lit house window turns into after dark. */

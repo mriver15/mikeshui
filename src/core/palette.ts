@@ -105,6 +105,9 @@ const NAMED: Array<[string, RGBA]> = [
   ["uiFill", hex("f8f0d8")],
   ["uiText", hex("40382e")],
   ["uiShadow", hex("1a1a22")],
+  // birds and bats against the sky: a near-black silhouette that stays
+  // the same at every hour, so it reads against noon blue and night navy
+  ["silhouette", hex("181826")],
 ];
 
 export const SKY_TOP = hex("62a4de");

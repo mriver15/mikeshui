@@ -28,6 +28,10 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 
 ![Eyes peeking out of tall grass under alert bubbles](docs/images/encounter.png)
 
+**Life in the sky.** Flocks of birds cross overhead in V-formations or loose bunches, now and then a large bird soars past on outstretched wings, and after dusk bats flutter across the stars. They're silhouettes only, flying at their own depth: a low flock can dip behind the hills.
+
+![Silhouetted flocks of birds crossing the sky above the hills](docs/images/flock.png)
+
 **The backdrop.** Snow-capped mountain ranges, hazy far hills, forested mid hills and rolling foothills, each scrolling at its own parallax speed, with mist in the valleys and clouds drifting between the layers.
 
 ![Mountains and clouds at dusk](docs/images/mountains-dusk.png)
@@ -43,6 +47,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 - **Sky**: pixel-art cumulus and stratus clouds in three parallax layers, and a layered landscape of mountains, hills and meadows.
 - **Area names**: original generated town names (checked against the games' real town names so none ever match), numbered routes between towns, named town-limit signs, and a GBA-style location banner on entering each area.
 - **Wild encounters**: occupied tufts of tall grass rustle, shed leaves and show a pair of peeking eyes (glowing after dark) under an alert bubble, and tapping any tuft sets one off.
+- **Flying silhouettes**: bird flocks (V-formations and loose bunches), lone soaring birds and night-time bats, each with a wing-flap cycle, crossing the sky on a parallax layer between the hills.
 - **Time of day**: the palette is re-tinted through dawn, day, dusk and night, with emissive lamps, lit windows, stars and a moon.
 - **Smooth scrolling**: eased motion with momentum, plus an idle-time buffer that generates the world just ahead of the view so new chunks never stall a frame.
 

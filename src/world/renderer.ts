@@ -5,6 +5,7 @@ import { keyRng, noise2i, hashString } from "../core/prng";
 import { dayPalette, type DayPalette } from "../core/daylight";
 import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
+import { SkyFauna } from "./fauna";
 import { drawPeekingEyes, drawAlertBubble } from "../sprites/critters";
 import { bannerPixmap } from "../sprites/banner";
 import { Backdrop } from "./backdrop";
@@ -128,6 +129,7 @@ export class Renderer {
   private fgChunks = new Map<number, ForegroundResult>();
   private clouds: CloudSky;
   private backdrop: Backdrop;
+  private fauna: SkyFauna;
   private fb = new Pixmap(1, VIEW_H);
   private off: HTMLCanvasElement;
   private offctx: CanvasRenderingContext2D;
@@ -161,6 +163,7 @@ export class Renderer {
     const offctx = this.off.getContext("2d");
     if (!offctx) throw new Error("2D canvas context unavailable");
     this.offctx = offctx;
+    this.fauna = new SkyFauna(seed);
     this.clouds = new CloudSky(seed);
     this.backdrop = new Backdrop(seed, HORIZON);
   }
@@ -170,6 +173,7 @@ export class Renderer {
     this.chunks.clear();
     this.fgChunks.clear();
     this.area = null;
+    this.fauna = new SkyFauna(seed);
     this.clouds = new CloudSky(seed);
     this.backdrop = new Backdrop(seed, HORIZON);
   }
@@ -216,6 +220,7 @@ export class Renderer {
     this.backdrop.drawLayer(fb, 1, scrollX);
     this.backdrop.drawMist(fb);
     this.clouds.drawLayer(fb, 2, scrollX, time);
+    this.fauna.draw(fb, scrollX, time, pal.darkness);
     this.backdrop.drawLayer(fb, 2, scrollX);
     this.backdrop.drawLayer(fb, 3, scrollX);
 
