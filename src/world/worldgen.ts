@@ -38,7 +38,6 @@ import {
   BUILDING_SIZE,
   PICKET_H,
   HEDGE_H,
-  SIGN_W,
   LAMP_W,
   LAMP_H,
 } from "../sprites/town";
@@ -162,6 +161,29 @@ function regionWeights(x: number, seed: string): { urban: number; forest: number
 }
 
 // --- continuous terrain curves (functions of world x, seam-free) ---
+
+/** One named stretch of the world, for the location banner. */
+export interface Area {
+  /** Stable identity: the banner shows when this changes. */
+  key: string;
+  title: string;
+  kind: "town" | "route";
+}
+
+/**
+ * Countryside is divided into numbered routes of this length; towns
+ * interrupt them. Long enough to feel like a journey, short enough that
+ * the world between distant towns still has landmarks.
+ */
+const ROUTE_LEN = 8192;
+
+/** The named area at world-x `x`: the town there, or else the route. */
+export function areaAt(x: number, seed: string): Area {
+  const town = townNear(x, seed);
+  if (town) return { key: `town:${town.start}`, title: town.title, kind: "town" };
+  const id = Math.floor(x / ROUTE_LEN);
+  return { key: `route:${id}`, title: `ROUTE ${101 + (((id % 34) + 34) % 34)}`, kind: "route" };
+}
 
 /** The route path's natural meander. */
 function wavyPathCenter(x: number, seed: string): number {
@@ -652,12 +674,14 @@ function placeTown(
     if (wx + 120 < town.end - 32) lamp(wx + 120, sidewalkBottom - 1);
   }
 
-  // town-limits signs beside the approaching path at each end
-  for (const sx of [town.start - 36 - SIGN_W, town.end + 36]) {
-    if (!near(sx, SIGN_W)) continue;
-    const band = pathBand(sx + SIGN_W / 2, seed);
-    if (band) stand(townSignPixmap(), sx, band[0] - 3);
+  // town-limits signs with the town's name, beside the approaching path at each end
+  const sign = townSignPixmap(town.name);
+  for (const sx of [town.start - 36 - sign.w, town.end + 36]) {
+    if (!near(sx, sign.w)) continue;
+    const band = pathBand(sx + sign.w / 2, seed);
+    if (band) stand(sign, sx, band[0] - 3);
   }
+
 
   function placeNorthLot(lot: Extract<Lot, { side: "north" }>, key: string, rng: () => number): void {
     if (lot.kind === "park") {
@@ -968,9 +992,9 @@ export function generateChunk(seed: string, k: number): ChunkResult {
   const fieldTop = HORIZON + 6;
   const fieldBottom = VIEW_H - 2;
 
-  // countryside decorations, kept clear of towns (and of the town-limits
-  // sign just outside each end)
-  const notUrbanAt = (wx: number) => townNear(wx, seed, 48) === null;
+  // countryside decorations, kept clear of towns and, with a wide margin,
+  // of the named town-limits sign standing just outside each end
+  const notUrbanAt = (wx: number) => townNear(wx, seed, 112) === null;
 
   // trainer (route only), standing on the path
   const trainerRng = keyRng(seed, "trainer", k);

@@ -20,6 +20,10 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 
 ![The same street at dawn, noon, dusk and night](docs/images/times-of-day.png)
 
+**Area names.** Every town has its own generated name, lettered on the signs at the town limits. Between towns, the countryside is split into numbered routes. A location banner slides in whenever you cross into a new area: a stone frame for towns, a wooden one for routes.
+
+![The location banner for a town, over the sky and mountains](docs/images/banner.png)
+
 **Something in the grass.** Now and then a tuft of tall grass rustles, and a pair of eyes peeks out between the blades. Tap a tuft to see who's home.
 
 ![Eyes peeking out of tall grass under alert bubbles](docs/images/encounter.png)
@@ -37,6 +41,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 - **Water**: lakes and ponds with shallows and deep water, a sandy shoreline all the way round, reflections, ripples, lapping foam, lily pads, reeds and the occasional fish surfacing.
 - **Towns**: one deterministic lot plan per town, so every chunk agrees on where each building, fence, tree and lamp goes.
 - **Sky**: pixel-art cumulus and stratus clouds in three parallax layers, and a layered landscape of mountains, hills and meadows.
+- **Area names**: original generated town names (checked against the games' real town names so none ever match), numbered routes between towns, named town-limit signs, and a GBA-style location banner on entering each area.
 - **Wild encounters**: occupied tufts of tall grass rustle, shed leaves and show a pair of peeking eyes (glowing after dark) under an alert bubble, and tapping any tuft sets one off.
 - **Time of day**: the palette is re-tinted through dawn, day, dusk and night, with emissive lamps, lit windows, stars and a moon.
 - **Smooth scrolling**: eased motion with momentum, plus an idle-time buffer that generates the world just ahead of the view so new chunks never stall a frame.

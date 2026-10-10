@@ -96,6 +96,15 @@ const NAMED: Array<[string, RGBA]> = [
   ["lampGlow", hex("ffe8a0")],
   ["star", hex("fff6dc")],
   ["moon", hex("f4f0d8")],
+  // on-screen UI (the location banner): also exempt from time-of-day
+  // tinting, so it reads the same at noon and midnight
+  ["uiWood", hex("b0764a")],
+  ["uiWoodDark", hex("6e4426")],
+  ["uiStone", hex("7f9cc4")],
+  ["uiStoneDark", hex("47628a")],
+  ["uiFill", hex("f8f0d8")],
+  ["uiText", hex("40382e")],
+  ["uiShadow", hex("1a1a22")],
 ];
 
 export const SKY_TOP = hex("62a4de");

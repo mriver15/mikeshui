@@ -6,11 +6,13 @@ import { dayPalette, type DayPalette } from "../core/daylight";
 import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
 import { drawPeekingEyes, drawAlertBubble } from "../sprites/critters";
+import { bannerPixmap } from "../sprites/banner";
 import { Backdrop } from "./backdrop";
 import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
 import {
   GROUND_BASE,
+  areaAt,
   generateChunk,
   generateForeground,
   CHUNK_W,
@@ -143,6 +145,8 @@ export class Renderer {
   private pokes = new Map<string, number>();
   /** How dark it is this frame (0 day .. 1 night), for glowing eyes. */
   private darkness = 0;
+  /** The area the view is in, its banner, and when the view entered it. */
+  private area: { key: string; banner: Pixmap; since: number } | null = null;
 
   constructor(
     private seed: string,
@@ -165,6 +169,7 @@ export class Renderer {
     this.seed = seed;
     this.chunks.clear();
     this.fgChunks.clear();
+    this.area = null;
     this.clouds = new CloudSky(seed);
     this.backdrop = new Backdrop(seed, HORIZON);
   }
@@ -239,7 +244,30 @@ export class Renderer {
     }
     this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, lit ? this.owners : undefined, true);
 
+    this.drawBanner(scrollX, time);
     this.present(pal, lit ? visible : [], scrollX, fgScroll);
+  }
+
+  /**
+   * The location banner: when the middle of the view crosses into a new
+   * town or route, its name slides down from the top-left corner, holds
+   * for a few seconds, and slides away again.
+   */
+  private drawBanner(scrollX: number, time: number): void {
+    const fb = this.fb;
+    const a = areaAt(scrollX + Math.floor(fb.w / 2), this.seed);
+    if (!this.area || this.area.key !== a.key) {
+      this.area = { key: a.key, banner: bannerPixmap(a.title, a.kind), since: time };
+    }
+    const age = time - this.area.since;
+    const slideIn = 280;
+    const hold = 3000;
+    const slideOut = 380;
+    if (age > hold + slideOut) return;
+    const ease = (t: number) => 1 - (1 - t) * (1 - t);
+    const shown = age < slideIn ? ease(age / slideIn) : age > hold ? 1 - ease((age - hold) / slideOut) : 1;
+    const b = this.area.banner;
+    blit(fb, b, 6, Math.round(-b.h + (b.h + 6) * shown));
   }
 
   /**

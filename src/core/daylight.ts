@@ -63,8 +63,11 @@ const KEYS: Light[] = [
   { phase: 1, ...NIGHT },
 ];
 
-/** Colors that emit light, so they're never darkened. */
-const EMISSIVE = new Set([C.lampGlow, C.star, C.moon]);
+/** Colors that emit light — or are on-screen UI — so they're never darkened. */
+const EMISSIVE = new Set([
+  C.lampGlow, C.star, C.moon,
+  C.uiWood, C.uiWoodDark, C.uiStone, C.uiStoneDark, C.uiFill, C.uiText, C.uiShadow,
+]);
 
 /** What a lit house window turns into after dark. */
 const WINDOW_GLOW: RGB = [255, 210, 122];

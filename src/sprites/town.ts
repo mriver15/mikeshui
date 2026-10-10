@@ -2,6 +2,7 @@ import { Pixmap } from "../core/pixmap";
 import { C } from "../core/palette";
 import type { RNG } from "../core/prng";
 import { puff } from "./objects";
+import { drawText, textWidth } from "./font";
 
 /**
  * Town sprites: buildings and the street furniture around them. Sized
@@ -183,44 +184,6 @@ function housePixmap(big: boolean, rng: RNG): BuildingSprite {
     for (let i = 0; i < 6; i++) p.set(fx + i * 2, lower + 13, petals[i % petals.length]);
   }
   return { pixmap: p, doorX };
-}
-
-/**
- * Tiny blocky pixel font for signage — just the capitals the service
- * buildings spell. Each glyph is rows of '1'/'0', 5 rows tall, variable width.
- */
-const GLYPHS: Record<string, string[]> = {
-  A: ["010", "101", "111", "101", "101"],
-  C: ["011", "100", "100", "100", "011"],
-  E: ["111", "100", "110", "100", "111"],
-  H: ["101", "101", "111", "101", "101"],
-  L: ["100", "100", "100", "100", "111"],
-  M: ["10001", "11011", "10101", "10001", "10001"],
-  N: ["1001", "1101", "1011", "1001", "1001"],
-  R: ["110", "101", "110", "101", "101"],
-  T: ["111", "010", "010", "010", "010"],
-  " ": ["0", "0", "0", "0", "0"],
-};
-
-/** Pixel width of `text` at `scale`, with one (scaled) pixel between letters. */
-function textWidth(text: string, scale = 1): number {
-  let w = 0;
-  for (const ch of text) w += (GLYPHS[ch][0].length + 1) * scale;
-  return w - scale;
-}
-
-/** Draw `text` centred on `cx` with its top at `y`. */
-function drawText(p: Pixmap, text: string, cx: number, y: number, color: number, scale = 1): void {
-  let x = Math.round(cx - textWidth(text, scale) / 2);
-  for (const ch of text) {
-    const g = GLYPHS[ch];
-    g.forEach((row, ry) => {
-      for (let rx = 0; rx < row.length; rx++) {
-        if (row[rx] === "1") p.fillRect(x + rx * scale, y + ry * scale, scale, scale, color);
-      }
-    });
-    x += (g[0].length + 1) * scale;
-  }
 }
 
 /**
@@ -479,21 +442,25 @@ export function mailboxPixmap(rng: RNG): Pixmap {
   return p;
 }
 
-export const SIGN_W = 28;
 export const SIGN_H = 26;
 
-/** A town-limits signboard on two posts, with a few strokes of lettering. */
-export function townSignPixmap(): Pixmap {
-  const p = new Pixmap(SIGN_W, SIGN_H);
+/**
+ * A town-limits signboard on two posts with the town's name lettered on
+ * it — as wide as the name needs.
+ */
+export function townSignPixmap(name: string): Pixmap {
+  const text = name.toUpperCase();
+  const w = Math.max(28, textWidth(text) + 10);
+  const p = new Pixmap(w, SIGN_H);
   p.fillRect(4, 10, 4, 16, C.black);
-  p.fillRect(20, 10, 4, 16, C.black);
+  p.fillRect(w - 8, 10, 4, 16, C.black);
   p.fillRect(5, 10, 2, 15, C.wood);
-  p.fillRect(21, 10, 2, 15, C.wood);
-  p.fillRect(0, 0, SIGN_W, 15, C.black);
-  p.fillRect(1, 1, SIGN_W - 2, 13, C.wood);
-  p.fillRect(1, 1, SIGN_W - 2, 2, C.pathEdge);
-  p.fillRect(3, 4, SIGN_W - 6, 8, C.wallTan);
-  for (const [x, y, w] of [[5, 5, 12], [5, 8, 18], [19, 5, 4]]) p.fillRect(x, y, w, 2, C.trunkDark);
+  p.fillRect(w - 7, 10, 2, 15, C.wood);
+  p.fillRect(0, 0, w, 15, C.black);
+  p.fillRect(1, 1, w - 2, 13, C.wood);
+  p.fillRect(1, 1, w - 2, 2, C.pathEdge);
+  p.fillRect(3, 4, w - 6, 8, C.wallTan);
+  drawText(p, text, w / 2, 5, C.trunkDark);
   return p;
 }
 
