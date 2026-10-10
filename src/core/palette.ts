@@ -108,6 +108,8 @@ const NAMED: Array<[string, RGBA]> = [
   // birds and bats against the sky: a near-black silhouette that stays
   // the same at every hour, so it reads against noon blue and night navy
   ["silhouette", hex("181826")],
+  // rain streaks and splashes (tinted with the hour like the scene)
+  ["rain", hex("b8cce0")],
 ];
 
 export const SKY_TOP = hex("62a4de");

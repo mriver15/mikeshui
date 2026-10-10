@@ -15,6 +15,7 @@ import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COU
 import {
   GROUND_BASE,
   areaAt,
+  weatherAt,
   generateChunk,
   generateForeground,
   CHUNK_W,
@@ -150,6 +151,10 @@ export class Renderer {
   private darkness = 0;
   /** The area the view is in, its banner, and when the view entered it. */
   private area: { key: string; banner: Pixmap; since: number } | null = null;
+  /** The weather here, eased toward the local weather as the view moves. */
+  private rain = 0;
+  private fog = 0;
+  private lastFrame: number | null = null;
   /** How far down from the top the location banner settles (clear of any overlaid UI). */
   private topInset = 6;
   /** Hidden items already found, by world position ("x,y"). */
@@ -180,6 +185,7 @@ export class Renderer {
     this.chunks.clear();
     this.fgChunks.clear();
     this.area = null;
+    this.lastFrame = null;
     this.found.clear();
     this.pickup = null;
     this.fauna = new SkyFauna(seed);
@@ -203,7 +209,9 @@ export class Renderer {
    */
   draw(scrollX: number, time: number, phase = 0.5): void {
     const fb = this.fb;
-    const pal = dayPalette(phase);
+    this.updateWeather(scrollX, time);
+    const flash = this.lightning(time);
+    const pal = flash ? dayPalette(0.5) : dayPalette(phase, this.rain * 0.9, this.fog);
     this.darkness = pal.darkness;
 
     // sky gradient (dithered for a smooth, band-free blend)
@@ -227,9 +235,9 @@ export class Renderer {
     this.backdrop.drawLayer(fb, 0, scrollX);
     this.clouds.drawLayer(fb, 1, scrollX, time);
     this.backdrop.drawLayer(fb, 1, scrollX);
-    this.backdrop.drawMist(fb);
+    this.backdrop.drawMist(fb, this.fog);
     this.clouds.drawLayer(fb, 2, scrollX, time);
-    this.fauna.draw(fb, scrollX, time, pal.darkness);
+    this.fauna.draw(fb, scrollX, time, pal.darkness, this.rain);
     this.backdrop.drawLayer(fb, 2, scrollX);
     this.backdrop.drawLayer(fb, 3, scrollX);
 
@@ -259,9 +267,76 @@ export class Renderer {
     }
     this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, lit ? this.owners : undefined, true);
 
+    this.drawRain(scrollX, time);
     this.drawPickup(scrollX, time);
     this.drawBanner(scrollX, time);
     this.present(pal, lit ? visible : [], scrollX, fgScroll);
+  }
+
+  /**
+   * Ease this frame's weather toward the weather at the middle of the
+   * view, over a few seconds — so walking into rain or fog brings it on
+   * gradually rather than switching at a line. The first frame snaps.
+   */
+  private updateWeather(scrollX: number, time: number): void {
+    const here = weatherAt(scrollX + Math.floor(this.fb.w / 2), this.seed);
+    const dt = this.lastFrame === null ? Infinity : Math.max(0, Math.min(0.25, (time - this.lastFrame) / 1000));
+    this.lastFrame = time;
+    const k = 1 - Math.exp(-dt * 0.9);
+    this.rain += (here.rain - this.rain) * k;
+    this.fog += (here.fog - this.fog) * k;
+  }
+
+  /** Whether lightning lights up the scene this frame: an occasional double flicker in heavy rain. */
+  private lightning(time: number): boolean {
+    if (this.rain < 0.8) return false;
+    const period = 7000;
+    const e = Math.floor(time / period);
+    const rng = keyRng(this.seed, "lightning", e);
+    if (rng() > 0.35) return false;
+    const age = time - e * period - rng() * (period - 400);
+    return (age >= 0 && age < 70) || (age >= 140 && age < 200);
+  }
+
+  /**
+   * Rain over everything: slanting streaks falling across the view (they
+   * move with the world as it scrolls, so they're out there, not on the
+   * glass), plus splashes — tiny rings on open water, little up-flicks on
+   * ground — popping up at random. Density follows how hard it's raining.
+   */
+  private drawRain(scrollX: number, time: number): void {
+    const amount = this.rain;
+    if (amount < 0.04) return;
+    const fb = this.fb;
+    const seed = hashString(this.seed + ":rain");
+    const t = time / 1000;
+    const W = fb.w + 40;
+    const H = fb.h + 30;
+    const mod = (a: number, m: number) => ((a % m) + m) % m;
+    const drops = Math.round(amount * 0.75 * fb.w);
+    for (let i = 0; i < drops; i++) {
+      const speed = 0.8 + noise2i(seed, i, 2) * 0.5;
+      const x = Math.round(mod(noise2i(seed, i, 0) * W - scrollX - t * 45 * speed, W)) - 20;
+      const y = Math.round(mod(noise2i(seed, i, 1) * H + t * 270 * speed, H)) - 20;
+      const len = 4 + Math.floor(noise2i(seed, i, 3) * 3);
+      for (let j = 0; j < len; j++) {
+        const px = x + Math.floor(j / 3);
+        const py = y - j;
+        if (px >= 0 && px < fb.w && py >= 0 && py < fb.h) fb.data[py * fb.w + px] = C.rain;
+      }
+    }
+    const bucket = Math.floor(time / 90);
+    const splashes = Math.round(amount * 0.05 * fb.w);
+    for (let j = 0; j < splashes; j++) {
+      const x = Math.floor(noise2i(seed + 1, bucket, j) * fb.w);
+      const y = HORIZON + 4 + Math.floor(noise2i(seed + 2, bucket, j) * (fb.h - HORIZON - 6));
+      const here = fb.data[y * fb.w + x];
+      const wet = here === C.water || here === C.waterLight || here === C.waterDark;
+      const c = wet ? C.waterBright : C.rain;
+      if (x > 0) fb.data[(y - 1) * fb.w + x - 1] = c;
+      if (x + 1 < fb.w) fb.data[(y - 1) * fb.w + x + 1] = c;
+      if (wet) fb.data[y * fb.w + x] = C.waterLight;
+    }
   }
 
   /** Keep the location banner clear of on-screen UI covering the top `px` view pixels. */

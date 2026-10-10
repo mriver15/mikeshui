@@ -234,10 +234,11 @@ export class Backdrop {
    * the mountains' and far hills' feet fade into it and it pools in the
    * gaps between the nearer hills.
    */
-  drawMist(fb: Pixmap): void {
-    const depth = 24;
-    for (let y = this.horizon - depth; y < this.horizon; y++) {
-      const t = ((y - (this.horizon - depth)) / depth) * 0.75;
+  drawMist(fb: Pixmap, fog = 0): void {
+    // fog deepens the bank and thickens it, swallowing the far hills' feet
+    const depth = Math.round(24 + fog * 44);
+    for (let y = Math.max(0, this.horizon - depth); y < this.horizon; y++) {
+      const t = ((y - (this.horizon - depth)) / depth) * (0.75 + fog * 0.2);
       for (let x = 0; x < fb.w; x++) {
         const i = y * fb.w + x;
         fb.data[i] = ditherPick(fb.data[i], C.treelineHazeLight, t, x, y);

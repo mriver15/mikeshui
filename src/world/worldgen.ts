@@ -186,6 +186,25 @@ export function areaAt(x: number, seed: string): Area {
   return { key: `route:${id}`, title: `ROUTE ${101 + (((id % 34) + 34) % 34)}`, kind: "route" };
 }
 
+/** The weather at a stretch of the world: rain and fog, each 0..1. */
+export interface Weather {
+  rain: number;
+  fog: number;
+}
+
+/**
+ * Weather is part of the place: slow noise across the world decides
+ * where it rains (a little more often over forest) and where fog lies,
+ * each easing in and out over a few hundred px, so walking into a rainy
+ * stretch brings the rain on gradually and walking out clears it.
+ */
+export function weatherAt(x: number, seed: string): Weather {
+  const { forest } = regionWeights(x, seed);
+  const rain = smoothstep(0.6, 0.7, fbm1D(x / 7000, seed + ":rain", 2) + forest * 0.06);
+  const fog = smoothstep(0.62, 0.72, fbm1D(x / 5200, seed + ":fog", 2)) * (1 - rain * 0.6);
+  return { rain, fog };
+}
+
 /** The route path's natural meander. */
 function wavyPathCenter(x: number, seed: string): number {
   return 200 + fbm1D(x / 320, seed + ":path", 2) * 28;

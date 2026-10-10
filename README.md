@@ -49,6 +49,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 - **Wild encounters**: occupied tufts of tall grass rustle, shed leaves and show a pair of peeking eyes (glowing after dark) under an alert bubble, and tapping any tuft sets one off.
 - **Flying silhouettes**: bird flocks (V-formations and loose bunches), lone soaring birds and night-time bats, each with a wing-flap cycle, crossing the sky on a parallax layer between the hills.
 - **Hidden items**: about half of the countryside hides an item in the grass, marked only by an occasional glint. Tap it to pick it up (a berry, a shiny stone, honey and more). Finds are remembered per world in your browser.
+- **Regional weather**: some stretches of the world are rainy (a little more often over forest) and some foggy, easing in as you walk into them. Rain brings an overcast sky, a drained, darker palette, slanting rain, splashes and rings on water, and the odd lightning flash in a downpour. Fog hazes everything and banks mist along the horizon.
 - **Time of day**: the palette is re-tinted through dawn, day, dusk and night, with emissive lamps, lit windows, stars and a moon.
 - **Smooth scrolling**: eased motion with momentum, plus an idle-time buffer that generates the world just ahead of the view so new chunks never stall a frame.
 

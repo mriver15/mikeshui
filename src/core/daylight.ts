@@ -110,14 +110,41 @@ function pack(r: number, g: number, b: number, a: number): number {
 
 /** Hours are quantized so the palette is rebuilt a few hundred times a day, not every frame. */
 const STEPS = 480;
+/** Weather (overcast, haze) is quantized to tenths. */
+const WEATHER_STEPS = 10;
+const MAX_CACHED = 256;
 const cache = new Map<number, DayPalette>();
 
-/** The palette for a time of day. */
-export function dayPalette(phase: number): DayPalette {
+const luma = (c: RGB) => c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11;
+/** `c` pulled `t` of the way toward its own gray. */
+const desaturate = (c: RGB, t: number): RGB => {
+  const y = luma(c);
+  return lerp3(c, [y, y, y], t);
+};
+
+/**
+ * The palette for a time of day, under the given weather. `overcast`
+ * (0..1, rain clouds) drains color from the scene, dims it and grays the
+ * sky; `haze` (0..1, fog) blends everything toward a fog color taken from
+ * the hour's own horizon — pale by day, dark blue-gray at night. Light
+ * sources and on-screen UI are left alone.
+ */
+export function dayPalette(phase: number, overcast = 0, haze = 0): DayPalette {
   const step = Math.round((((phase % 1) + 1) % 1) * STEPS) % STEPS;
-  const hit = cache.get(step);
+  const ov = Math.round(Math.min(1, Math.max(0, overcast)) * WEATHER_STEPS);
+  const hz = Math.round(Math.min(1, Math.max(0, haze)) * WEATHER_STEPS);
+  const key = (step * (WEATHER_STEPS + 1) + ov) * (WEATHER_STEPS + 1) + hz;
+  const hit = cache.get(key);
   if (hit) return hit;
   const L = lightAt(step / STEPS);
+  const o = ov / WEATHER_STEPS;
+  const h = hz / WEATHER_STEPS;
+  const fog = desaturate(L.skyHorizon, 0.6);
+  const weather = (c: RGB, sky: boolean): RGB => {
+    let out = desaturate(c, o * (sky ? 0.85 : 0.45));
+    if (!sky) out = [out[0] * (1 - 0.22 * o), out[1] * (1 - 0.22 * o), out[2] * (1 - 0.2 * o)];
+    return lerp3(out, fog, h * (sky ? 0.6 : 0.42));
+  };
   const n = RGBA.length / 4;
   const base = new Uint32Array(n);
   const lit = new Uint32Array(n);
@@ -129,10 +156,11 @@ export function dayPalette(phase: number): DayPalette {
     const a = RGBA[i * 4 + 3];
     let out: RGB;
     if (EMISSIVE.has(i)) out = [r, g, b];
-    else if (sky.has(i)) out = lerp3(L.skyTop, L.skyHorizon, sky.get(i)!);
+    else if (sky.has(i)) out = weather(lerp3(L.skyTop, L.skyHorizon, sky.get(i)!), true);
     else {
       out = [r * L.mul[0] + L.add[0], g * L.mul[1] + L.add[1], b * L.mul[2] + L.add[2]];
       if (i === C.houseWindow) out = lerp3(out, WINDOW_GLOW, Math.min(1, L.darkness * 1.4));
+      else out = weather(out, false);
     }
     base[i] = pack(out[0], out[1], out[2], a);
     const warm: RGB = EMISSIVE.has(i) || sky.has(i) ? out : [r * LAMPLIGHT[0], g * LAMPLIGHT[1], b * LAMPLIGHT[2]];
@@ -140,6 +168,10 @@ export function dayPalette(phase: number): DayPalette {
     lit[i] = pack(l[0], l[1], l[2], a);
   }
   const pal = { base, lit, darkness: L.darkness };
-  cache.set(step, pal);
+  cache.set(key, pal);
+  if (cache.size > MAX_CACHED) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
   return pal;
 }

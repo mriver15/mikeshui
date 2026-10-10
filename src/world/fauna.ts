@@ -50,12 +50,14 @@ export class SkyFauna {
 
   constructor(private seed: string) {}
 
-  draw(fb: Pixmap, scrollX: number, time: number, darkness: number): void {
+  draw(fb: Pixmap, scrollX: number, time: number, darkness: number, rain = 0): void {
     const event = Math.floor(time / EVENT_MS);
     if (event !== this.lastEvent) {
       this.lastEvent = event;
       const flock = this.roll(event, scrollX, fb.w, darkness, event * EVENT_MS);
-      if (flock && this.flocks.length < 3) this.flocks.push(flock);
+      // birds mostly sit out the rain
+      const grounded = keyRng(this.seed, "flockrain", event)() < rain * 0.8;
+      if (flock && !grounded && this.flocks.length < 3) this.flocks.push(flock);
     }
 
     const view = scrollX * PARALLAX;
