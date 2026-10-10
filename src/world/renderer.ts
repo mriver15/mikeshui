@@ -7,6 +7,8 @@ import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
 import { SkyFauna } from "./fauna";
 import { drawPeekingEyes, drawAlertBubble } from "../sprites/critters";
+import { personPixmap, rollLook, PERSON_W, PERSON_H, type Look } from "../sprites/people";
+import { walkerAt, STREET_HALF, type Town } from "./town";
 import { bannerPixmap, messagePixmap } from "../sprites/banner";
 import { ITEMS, itemIcon, drawSparkle } from "../sprites/items";
 import { Backdrop } from "./backdrop";
@@ -15,6 +17,7 @@ import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COU
 import {
   FG_PARALLAX,
   GROUND_BASE,
+  townAround,
   areaAt,
   weatherAt,
   generateChunk,
@@ -158,6 +161,8 @@ export class Renderer {
   private lastFrame: number | null = null;
   /** How far down from the top the location banner settles (clear of any overlaid UI). */
   private topInset = 6;
+  /** Townspeople's looks, rolled once each. */
+  private looks = new Map<number, Look>();
   /** Hidden items already found, by world position ("x,y"), with which item each was (-1 if unknown). */
   private found = new Map<string, number>();
   /** The latest find: where, what, and when, for the pickup and message. */
@@ -255,18 +260,23 @@ export class Renderer {
     const visible = this.chunkRange(first, last, (k) => this.getChunk(k));
     this.drawItemGlints(visible, scrollX, time);
     const lit = pal.darkness > 0.15 && visible.some(({ chunk }) => chunk.lights.length > 0);
-    if (lit) this.owners.fill(UNSET);
-    this.drawAnimated(visible, scrollX, time, lit ? this.owners : undefined);
+    const town = townAround(scrollX + Math.floor(fb.w / 2), this.seed, fb.w);
+    // what's drawn where this frame matters for lamplight, and for keeping
+    // townspeople behind whatever stands in front of them
+    const track = lit || town !== null;
+    if (track) this.owners.fill(UNSET);
+    const fgScroll = Math.round(scrollX * PARALLAX);
+    this.drawAnimated(visible, scrollX, time, track ? this.owners : undefined);
+    if (town) this.drawTownsfolk(town, scrollX, fgScroll, time);
     drawWaterEffects(fb, visible.map(({ k, chunk }) => ({ k, water: chunk.water })), scrollX, time, this.seed);
 
     // foreground (parallax: scrolls faster, drawn last)
-    const fgScroll = Math.round(scrollX * PARALLAX);
     const fgFirst = Math.floor(fgScroll / CHUNK_W);
     const fgLast = Math.floor((fgScroll + fb.w - 1) / CHUNK_W);
     for (let k = fgFirst; k <= fgLast; k++) {
       blit(fb, this.getFgChunk(k).pixmap, k * CHUNK_W - fgScroll, 0);
     }
-    this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, lit ? this.owners : undefined, true);
+    this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, track ? this.owners : undefined, true);
 
     this.drawRain(scrollX, time);
     this.drawPickup(scrollX, time);
@@ -521,6 +531,47 @@ export class Renderer {
     const ease = (t: number) => 1 - (1 - t) * (1 - t);
     const shown = age < 250 ? ease(age / 250) : age > 2800 ? 1 - ease((age - 2800) / 400) : 1;
     blit(fb, m, Math.round((fb.w - m.w) / 2), Math.round(fb.h - (m.h + 6) * shown));
+  }
+
+  /**
+   * The town's people, out walking: each paces their stretch of sidewalk
+   * with a three-frame stride (stepping every few pixels walked), stopping
+   * to stand at either end. Fewer are out after dark. A pixel of a walker
+   * is drawn only where nothing nearer stands, so lamps, fences and trees
+   * in front of them stay in front.
+   */
+  private drawTownsfolk(town: Town, scrollX: number, fgScroll: number, time: number): void {
+    const fb = this.fb;
+    const seed = hashString(this.seed + ":folk");
+    const north = town.roadY - STREET_HALF + 8;
+    const south = town.roadY + STREET_HALF - 3;
+    for (const w of town.people) {
+      if (noise2i(seed, w.id & 0xffff, w.id >>> 16) < this.darkness * 0.65) continue;
+      const at = walkerAt(w, time);
+      const x0 = Math.round(at.x - scrollX - PERSON_W / 2);
+      if (x0 < -PERSON_W || x0 > fb.w) continue;
+      let look = this.looks.get(w.id);
+      if (!look) {
+        look = rollLook(keyRng(this.seed, "look", w.id));
+        this.looks.set(w.id, look);
+      }
+      const frame = at.moving ? [1, 0, 2, 0][Math.floor(at.walked / 3) % 4] : 0;
+      const sprite = personPixmap(look, frame, at.right);
+      const feet = w.side === "north" ? north : south;
+      const y0 = feet - PERSON_H + 1;
+      for (let y = 0; y < PERSON_H; y++) {
+        const sy = y0 + y;
+        if (sy < 0 || sy >= fb.h) continue;
+        for (let x = 0; x < PERSON_W; x++) {
+          const c = sprite.get(x, y);
+          const sx = x0 + x;
+          if (!c || sx < 0 || sx >= fb.w) continue;
+          if (this.ownerBase(sx, sy, scrollX, fgScroll) > feet) continue;
+          fb.data[sy * fb.w + sx] = c;
+          this.owners[sy * fb.w + sx] = feet;
+        }
+      }
+    }
   }
 
   /**

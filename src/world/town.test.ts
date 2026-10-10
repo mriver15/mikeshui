@@ -45,3 +45,23 @@ describe("findTown", () => {
     expect(town.roadY).toBe(Math.round(roadYAt((town.start + town.end) / 2)));
   });
 });
+
+describe("walkerAt", () => {
+  const walker = { x0: 100, x1: 220, side: "north" as const, speed: 12, pause: 2, phase: 0.3, id: 1 };
+
+  it("keeps a walker on their stretch, moving smoothly, turning at the ends", async () => {
+    const { walkerAt } = await import("./town");
+    let prev = walkerAt(walker, 0);
+    let turns = 0;
+    for (let t = 16; t < 60000; t += 16) {
+      const at = walkerAt(walker, t);
+      expect(at.x).toBeGreaterThanOrEqual(walker.x0 - 1e-6);
+      expect(at.x).toBeLessThanOrEqual(walker.x1 + 1e-6);
+      // never teleports: at most a frame's walk between frames
+      expect(Math.abs(at.x - prev.x)).toBeLessThanOrEqual(walker.speed * 0.016 + 1e-6);
+      if (at.right !== prev.right) turns++;
+      prev = at;
+    }
+    expect(turns).toBeGreaterThan(2);
+  });
+});

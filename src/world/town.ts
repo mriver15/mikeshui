@@ -43,6 +43,41 @@ export interface Town {
   /** The street's straight centre line (the wavy route path eases onto it). */
   roadY: number;
   lots: Lot[];
+  people: Walker[];
+}
+
+/**
+ * A townsperson pacing a stretch of sidewalk: out from `x0` to `x1` and
+ * back, pausing at each end. Where they are is a pure function of time
+ * (see `walkerAt`), so they cross chunk boundaries freely and every frame
+ * agrees on where they are.
+ */
+export interface Walker {
+  x0: number;
+  x1: number;
+  side: "north" | "south";
+  /** px per second, and seconds spent standing at each end. */
+  speed: number;
+  pause: number;
+  /** Where in their round trip they are at time 0, as a fraction. */
+  phase: number;
+  /** Seed for their look. */
+  id: number;
+}
+
+/** Where a walker is at `time` (ms), which way they face, and how far they've walked (for the stride). */
+export function walkerAt(w: Walker, time: number): { x: number; right: boolean; moving: boolean; walked: number } {
+  const len = w.x1 - w.x0;
+  const leg = len / w.speed;
+  const cycle = 2 * (leg + w.pause);
+  const u = (((time / 1000 + w.phase * cycle) % cycle) + cycle) % cycle;
+  if (u < leg) return { x: w.x0 + u * w.speed, right: true, moving: true, walked: u * w.speed };
+  if (u < leg + w.pause) return { x: w.x1, right: true, moving: false, walked: 0 };
+  if (u < 2 * leg + w.pause) {
+    const d = (u - leg - w.pause) * w.speed;
+    return { x: w.x1 - d, right: false, moving: true, walked: d };
+  }
+  return { x: w.x0, right: false, moving: false, walked: 0 };
 }
 
 interface SeedCache {
@@ -94,7 +129,7 @@ export function findTown(
     const roadY = Math.round(roadYAt((start + end) / 2));
     const name = townName(seed, start);
     const title = `${name.toUpperCase()} ${end - start > 4000 ? "CITY" : "TOWN"}`;
-    const town: Town = { start, end, name, title, roadY, lots: planLots(seed, start, end) };
+    const town: Town = { start, end, name, title, roadY, lots: planLots(seed, start, end), people: planPeople(seed, start, end) };
     cache.towns.push(town);
     if (x >= start - margin && x < end + margin) return town;
   }
@@ -180,4 +215,25 @@ export function townName(seed: string, start: number): string {
     const name = NAME_HEADS[Math.floor(rng() * NAME_HEADS.length)] + NAME_TAILS[Math.floor(rng() * NAME_TAILS.length)];
     if (!SERIES_TOWNS.has(name.toLowerCase())) return name;
   }
+}
+
+/** About one townsperson per 150px of street, each pacing their own stretch of one sidewalk. */
+function planPeople(seed: string, start: number, end: number): Walker[] {
+  const rng = keyRng(seed, "people", start);
+  const people: Walker[] = [];
+  const n = 1 + Math.floor((end - start) / 150);
+  for (let i = 0; i < n; i++) {
+    const len = 60 + rng() * 140;
+    const x0 = start + 30 + rng() * Math.max(1, end - start - 60 - len);
+    people.push({
+      x0,
+      x1: Math.min(end - 30, x0 + len),
+      side: rng() < 0.55 ? "north" : "south",
+      speed: 10 + rng() * 7,
+      pause: 1 + rng() * 2.5,
+      phase: rng(),
+      id: Math.floor(rng() * 1e9),
+    });
+  }
+  return people;
 }

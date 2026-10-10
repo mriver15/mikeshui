@@ -18,7 +18,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 
 ![A beach route: palms on the dunes, a boardwalk, and waves rolling in](docs/images/beach.png)
 
-**Towns.** Planned towns along a paved street: houses with fenced yards and mailboxes, a healing center and a mart side by side mid-town, street lamps, gardens and bench nooks.
+**Towns.** Planned towns along a paved street: houses with fenced yards and mailboxes, a healing center and a mart side by side mid-town, street lamps, gardens and bench nooks, and townspeople out walking along the sidewalks (fewer after dark).
 
 ![A town street at midday](docs/images/town.png)
 

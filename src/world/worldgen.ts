@@ -172,6 +172,11 @@ function townNear(x: number, seed: string, margin = 0): Town | null {
   return findTown(seed, x, margin, (cx) => regionAt(cx, seed) === REGION_CITY, (cx) => wavyPathCenter(cx, seed));
 }
 
+/** The town within `margin` px of world-x `x`, if any — for the renderer's townspeople. */
+export function townAround(x: number, seed: string, margin: number): Town | null {
+  return townNear(x, seed, margin);
+}
+
 function inTown(x: number, seed: string): boolean {
   return townNear(x, seed) !== null;
 }
