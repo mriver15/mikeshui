@@ -86,7 +86,7 @@ const MAX_CACHED_CHUNKS = 64;
 /** How long one tall-grass encounter plays out, in ms. */
 const ENCOUNTER_MS = 3000;
 /** Share of tall-grass tufts with something living in them. */
-const OCCUPIED = 0.3;
+const OCCUPIED = 0.12;
 
 /**
  * Where a tall-grass encounter is up to: the tuft rustles hard and sheds
@@ -369,7 +369,7 @@ export class Renderer {
 
   /**
    * The encounter playing out in the tuft at (wx, y), if any. Occupied
-   * tufts (a fixed share, chosen per tuft) each run one every 8–22 s on
+   * tufts (a fixed share, chosen per tuft) each run one every 14–34 s on
    * their own offset, so the field is never quite still but never busy;
    * a tap on any tuft starts one there at once.
    */
@@ -382,7 +382,7 @@ export class Renderer {
     }
     const seed = hashString(this.seed + ":encounter");
     if (noise2i(seed, wx, y) > OCCUPIED) return null;
-    const period = 8000 + noise2i(seed + 1, wx, y) * 14000;
+    const period = 14000 + noise2i(seed + 1, wx, y) * 20000;
     return encounterAt((time + noise2i(seed + 2, wx, y) * period) % period);
   }
 
