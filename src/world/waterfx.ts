@@ -3,6 +3,7 @@ import { C, RGBA, SKY } from "../core/palette";
 import { ditherThreshold } from "../core/dither";
 import { hashString, keyRng, noise2i } from "../core/prng";
 import type { WaterSpan } from "./water";
+import { drawLeapingFish } from "../sprites/critters";
 import { CHUNK_W } from "./worldgen";
 
 /** How far below the shoreline reflections reach before fading out. */
@@ -60,7 +61,8 @@ export interface WaterChunk {
  *   pace and each dash fading in and out on its own cycle — in place of
  *   random per-pixel glints, which read as static;
  * - foam lapping at the shoreline in slow travelling swells;
- * - now and then, a ring spreading where a fish surfaced.
+ * - now and then, a fish: surfacing in a spreading ring, or leaping out
+ *   in an arc and splashing back in.
  */
 export function drawWaterEffects(fb: Pixmap, chunks: WaterChunk[], scrollX: number, time: number, seed: string): void {
   const rippleSeed = hashString(seed + ":ripple");
@@ -75,6 +77,29 @@ export function drawWaterEffects(fb: Pixmap, chunks: WaterChunk[], scrollX: numb
     standing(x - 2, y) && standing(x - 1, y) && standing(x + 1, y) && standing(x + 2, y);
   const put = (x: number, y: number, c: number) => {
     if (x >= 0 && x < fb.w && y >= 0 && y < fb.h && OPEN_WATER.has(px(x, y))) fb.data[y * fb.w + x] = c;
+  };
+
+  /** A ring spreading out over the water from (cx, cy), `age` seconds old. */
+  const ring = (cx: number, cy: number, age: number) => {
+    if (age < 0.2) put(cx, cy - 1, C.waterBright);
+    const rx = 1.5 + age * 7;
+    const ry = rx * 0.35;
+    const steps = Math.ceil(rx * 6);
+    for (let i = 0; i < steps; i++) {
+      if (age > 0.9 && i % 2 === 0) continue;
+      const a = (i / steps) * Math.PI * 2;
+      put(Math.round(cx + Math.cos(a) * rx), Math.round(cy + Math.sin(a) * ry), age < 0.7 ? C.waterBright : C.waterLight);
+    }
+  };
+  /** A few droplets thrown up and out from (cx, cy), mostly toward `dir`. */
+  const splash = (cx: number, cy: number, age: number, dir: number) => {
+    for (let i = 0; i < 5; i++) {
+      const vx = (i - 2) * 9 + dir * 8;
+      const vy = 26 + (i % 2) * 10;
+      const x = Math.round(cx + vx * age);
+      const y = Math.round(cy - vy * age + 90 * age * age);
+      if (x >= 0 && x < fb.w && y >= 0 && y < fb.h) fb.data[y * fb.w + x] = C.waterBright;
+    }
   };
 
   for (const { k, water } of chunks) {
@@ -124,13 +149,15 @@ export function drawWaterEffects(fb: Pixmap, chunks: WaterChunk[], scrollX: numb
       }
     }
 
-    // a fish surfacing: one chance per chunk every few seconds, a ring
-    // spreading out from a random point of open water and fading
+    // a fish: one chance per chunk every few seconds. Sometimes it just
+    // surfaces — a ring spreading out and fading — and sometimes it leaps:
+    // a splash, an arc through the air a body-length or so across, and a
+    // splash and ring where it lands.
     const period = 3.4;
     const offset = (noise2i(rippleSeed + 9, k, 0) * period) | 0;
     const event = Math.floor((t + offset) / period);
     const age = (t + offset) % period;
-    if (age > 1.5) continue;
+    if (age > 2.2) continue;
     const rng = keyRng(seed, "fish", k, event);
     if (rng() > 0.55) continue;
     const lx = Math.floor(rng() * water.length);
@@ -140,14 +167,28 @@ export function drawWaterEffects(fb: Pixmap, chunks: WaterChunk[], scrollX: numb
     if (bottom - top < 8) continue;
     const cy = top + 5 + Math.floor(rng() * (bottom - top - 7));
     const cx = left + lx;
-    if (age < 0.2) put(cx, cy - 1, C.waterBright);
-    const rx = 1.5 + age * 7;
-    const ry = rx * 0.35;
-    const steps = Math.ceil(rx * 6);
-    for (let i = 0; i < steps; i++) {
-      if (age > 0.9 && i % 2 === 0) continue;
-      const a = (i / steps) * Math.PI * 2;
-      put(Math.round(cx + Math.cos(a) * rx), Math.round(cy + Math.sin(a) * ry), age < 0.7 ? C.waterBright : C.waterLight);
+    const leap = rng() < 0.45;
+    const dir = rng() < 0.5 ? -1 : 1;
+    const scheme = rng() < 0.7 ? 0 : 1;
+    if (!leap) {
+      if (age < 1.5) ring(cx, cy, age);
+      continue;
     }
+    const air = 0.62;
+    const span = 18 + Math.floor(rng() * 10);
+    const height = 8 + Math.floor(rng() * 4);
+    if (age < 1.2) ring(cx, cy, age * 0.8);
+    if (age < 0.25) splash(cx, cy, age, -dir);
+    if (age < air) {
+      const u = age / air;
+      const fx = cx + dir * span * u;
+      const fy = cy - height * 4 * u * (1 - u);
+      drawLeapingFish(fb, fx, fy, dir * span, -height * 4 * (1 - 2 * u), scheme);
+    } else {
+      const landed = age - air;
+      if (landed < 1.5) ring(cx + dir * span, cy, landed);
+      if (landed < 0.25) splash(cx + dir * span, cy, landed, dir);
+    }
+
   }
 }

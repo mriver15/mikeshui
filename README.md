@@ -42,7 +42,7 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 - **Regions**: open routes, dense forest and towns, blended smoothly along the way.
 - **Trees that grow out of the ground**: every tree is unique (canopy shape, lean, trunk flare and roots), with shadows and grass tufts around its base. Trees cluster into groves with clearings in between.
 - **Depth**: everything standing on the ground is drawn back to front, and a per-pixel depth buffer keeps swaying canopies and grass behind anything in front of them.
-- **Water**: lakes and ponds with shallows and deep water, a sandy shoreline all the way round, reflections, ripples, lapping foam, lily pads, reeds and the occasional fish surfacing.
+- **Water**: lakes and ponds with shallows and deep water, a sandy shoreline all the way round, reflections, ripples, lapping foam, lily pads, reeds, and fish that surface in spreading rings or leap out of the water and splash back in.
 - **Towns**: one deterministic lot plan per town, so every chunk agrees on where each building, fence, tree and lamp goes.
 - **Sky**: pixel-art cumulus and stratus clouds in three parallax layers, and a layered landscape of mountains, hills and meadows.
 - **Area names**: original generated town names (checked against the games' real town names so none ever match), numbered routes between towns, named town-limit signs, and a GBA-style location banner on entering each area.
