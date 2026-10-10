@@ -79,7 +79,7 @@ export function boot(root: HTMLElement): void {
         <button id="new">✦ new</button>
         <button id="dl">↓ png</button>
       </div>
-      <div class="hint">← → or drag to wander</div>
+      <div class="hint">← → or drag to wander · tap tall grass</div>
     </div>`;
   root.appendChild(ui);
 
@@ -207,7 +207,13 @@ export function boot(root: HTMLElement): void {
   // momentum on release
   let lastX = 0;
   let lastMoveTime = 0;
+  let downX = 0;
+  let downTime = 0;
+  let travelled = 0;
   canvas.addEventListener("pointerdown", (e) => {
+    downX = e.clientX;
+    downTime = e.timeStamp;
+    travelled = 0;
     motion.dragging = true;
     motion.velocity = 0;
     motion.dragVelocity = 0;
@@ -222,6 +228,7 @@ export function boot(root: HTMLElement): void {
     const dt = Math.max(1, e.timeStamp - lastMoveTime) / 1000;
     lastX = e.clientX;
     lastMoveTime = e.timeStamp;
+    travelled = Math.max(travelled, Math.abs(e.clientX - downX));
     motion.target = Math.max(0, motion.target + dx);
     motion.x = motion.target;
     motion.dragVelocity = motion.dragVelocity * 0.6 + (dx / dt) * 0.4;
@@ -230,6 +237,15 @@ export function boot(root: HTMLElement): void {
   const endDrag = (e: PointerEvent) => {
     if (!motion.dragging) return;
     motion.dragging = false;
+    // a press that barely moved is a tap on the scene, not a drag: poke
+    // whatever's there (a tall-grass tuft starts an encounter)
+    if (e.type === "pointerup" && travelled < 5 && e.timeStamp - downTime < 400) {
+      const rect = canvas.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * state.logicalW;
+      const y = ((e.clientY - rect.top) / rect.height) * VIEW_H;
+      renderer.poke(Math.floor(x), Math.floor(y), Math.round(motion.x), performance.now());
+      return;
+    }
     // a drag that stopped before release shouldn't fling
     const still = e.timeStamp - lastMoveTime > 80;
     const fling = still ? 0 : motion.dragVelocity;

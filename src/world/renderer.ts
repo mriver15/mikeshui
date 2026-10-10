@@ -5,6 +5,7 @@ import { keyRng, noise2i, hashString } from "../core/prng";
 import { dayPalette, type DayPalette } from "../core/daylight";
 import { tallGrassTile, TILE } from "../sprites/tiles";
 import { CloudSky } from "./clouds";
+import { drawPeekingEyes, drawAlertBubble } from "../sprites/critters";
 import { Backdrop } from "./backdrop";
 import { drawWaterEffects } from "./waterfx";
 import { treeCanopyPixmap, berryCanopyPixmap, treeLobeCount, BERRY_TREE_LOBE_COUNT, TREE_W } from "../sprites/objects";
@@ -76,6 +77,40 @@ function blitBehind(
  */
 const MAX_CACHED_CHUNKS = 64;
 
+/** How long one tall-grass encounter plays out, in ms. */
+const ENCOUNTER_MS = 3000;
+/** Share of tall-grass tufts with something living in them. */
+const OCCUPIED = 0.3;
+
+/**
+ * Where a tall-grass encounter is up to: the tuft rustles hard and sheds
+ * a few leaves, then eyes peek out between the blades, glance about and
+ * blink, with a "!" popping up as they appear.
+ */
+interface Encounter {
+  /** ms since it began. */
+  t: number;
+  rustle: boolean;
+  eyes: boolean;
+  blink: boolean;
+  look: number;
+  /** 0..1 pop-in of the alert bubble, or -1 when it isn't showing. */
+  alert: number;
+}
+
+function encounterAt(t: number): Encounter | null {
+  if (t < 0 || t >= ENCOUNTER_MS) return null;
+  const eyes = t > 850 && t < 2750;
+  return {
+    t,
+    rustle: t < 1000,
+    eyes,
+    blink: eyes && t > 1400 && t % 950 < 110,
+    look: t < 1800 ? -1 : 1,
+    alert: t > 900 && t < 1750 ? Math.min(1, (t - 900) / 220) : -1,
+  };
+}
+
 /** `owners` value for a pixel nothing animated has drawn this frame. */
 const UNSET = -32767;
 /** Base y standing in for the foreground layer: in front of everything. */
@@ -104,6 +139,10 @@ export class Renderer {
    * front of a lamp; UNSET where the baked chunk shows through.
    */
   private owners = new Int16Array(0);
+  /** Tufts the viewer tapped, keyed by world position, with when. */
+  private pokes = new Map<string, number>();
+  /** How dark it is this frame (0 day .. 1 night), for glowing eyes. */
+  private darkness = 0;
 
   constructor(
     private seed: string,
@@ -147,6 +186,7 @@ export class Renderer {
   draw(scrollX: number, time: number, phase = 0.5): void {
     const fb = this.fb;
     const pal = dayPalette(phase);
+    this.darkness = pal.darkness;
 
     // sky gradient (dithered for a smooth, band-free blend)
     for (let y = 0; y < HORIZON; y++) {
@@ -200,6 +240,58 @@ export class Renderer {
     this.drawAnimated(this.chunkRange(fgFirst, fgLast, (k) => this.getFgChunk(k)), fgScroll, time, lit ? this.owners : undefined, true);
 
     this.present(pal, lit ? visible : [], scrollX, fgScroll);
+  }
+
+  /**
+   * The encounter playing out in the tuft at (wx, y), if any. Occupied
+   * tufts (a fixed share, chosen per tuft) each run one every 8–22 s on
+   * their own offset, so the field is never quite still but never busy;
+   * a tap on any tuft starts one there at once.
+   */
+  private encounter(wx: number, y: number, time: number): Encounter | null {
+    const poked = this.pokes.get(`${wx},${y}`);
+    if (poked !== undefined) {
+      const e = encounterAt(time - poked);
+      if (e) return e;
+      this.pokes.delete(`${wx},${y}`);
+    }
+    const seed = hashString(this.seed + ":encounter");
+    if (noise2i(seed, wx, y) > OCCUPIED) return null;
+    const period = 8000 + noise2i(seed + 1, wx, y) * 14000;
+    return encounterAt((time + noise2i(seed + 2, wx, y) * period) % period);
+  }
+
+  /** A few blades torn loose by a rustle, flung up and out and falling back. */
+  private drawLeaves(cx: number, cy: number, t: number, key: number): void {
+    const fb = this.fb;
+    const s = t / 1000;
+    if (s > 0.8) return;
+    for (let i = 0; i < 4; i++) {
+      const vx = (noise2i(key, i, 1) * 2 - 1) * 26;
+      const vy = 34 + noise2i(key, i, 2) * 22;
+      const x = Math.round(cx + vx * s);
+      const y = Math.round(cy - vy * s + 70 * s * s);
+      if (x < 0 || x >= fb.w || y < 0 || y >= fb.h) continue;
+      fb.data[y * fb.w + x] = i % 2 ? C.grassLight : C.tallGrassLight;
+      if (x + 1 < fb.w) fb.data[y * fb.w + x + 1] = C.grassDark;
+    }
+  }
+
+  /**
+   * The viewer tapped the screen at (x, y) in view pixels: if it's on a
+   * tall-grass tuft, set off an encounter there now.
+   */
+  poke(x: number, y: number, scrollX: number, time: number): boolean {
+    const wx = scrollX + x;
+    const chunk = this.chunks.get(Math.floor(wx / CHUNK_W));
+    if (!chunk) return false;
+    for (const spot of chunk.tallGrass) {
+      if (wx >= spot.x && wx < spot.x + TILE && y >= spot.y + 8 && y < spot.y + TILE) {
+        this.pokes.set(`${spot.x},${spot.y}`, time);
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -278,12 +370,27 @@ export class Renderer {
         for (const spot of chunk.tallGrass) {
           const screenX = spot.x - scrollX;
           if (screenX < -TILE || screenX >= fb.w) continue;
+          const enc = this.encounter(spot.x, spot.y, time);
           items.push({
             depth: spot.depth,
             draw: () => {
-              const lean = Math.sin(time / 900 + spot.x * 0.05) * 2.4;
+              const lean = enc?.rustle ? Math.sin(time / 45 + spot.x) * 3.5 : Math.sin(time / 900 + spot.x * 0.05) * 2.4;
               const rng = keyRng(this.seed, "talltile", spot.k, spot.i, spot.t);
-              blitBehind(fb, tallGrassTile(rng, lean), screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth, owners, front ? FRONT : spot.y + 30);
+              const tile = tallGrassTile(rng, lean);
+              const base = front ? FRONT : spot.y + 30;
+              if (!enc || (!enc.eyes && enc.alert < 0)) {
+                blitBehind(fb, tile, screenX, spot.y, 1, chunk.depth, chunkLeft, spot.depth, owners, base);
+              } else {
+                // eyes behind the blades, the bubble above the tuft
+                const head = 14;
+                const p = new Pixmap(TILE, TILE + head);
+                const white = this.darkness > 0.5 ? C.star : C.houseTrim;
+                if (enc.eyes) drawPeekingEyes(p, TILE / 2, head + 20, enc.look, enc.blink, white);
+                blit(p, tile, 0, head);
+                if (enc.alert >= 0) drawAlertBubble(p, TILE / 2, head + 12, enc.alert);
+                blitBehind(fb, p, screenX, spot.y - head, 1, chunk.depth, chunkLeft, spot.depth, owners, base);
+              }
+              if (enc?.rustle) this.drawLeaves(screenX + TILE / 2, spot.y + 18, enc.t, spot.x);
             },
           });
         }
