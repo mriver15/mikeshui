@@ -86,6 +86,7 @@ export function boot(root: HTMLElement): void {
         </div>
         <button id="time" title="skip to the next time of day">☀ day</button>
         <button id="new" title="generate a new world">✦ new</button>
+        <button id="link" title="copy a link to exactly this spot and time of day">🔗 link</button>
         <button id="dl" title="save a screenshot">↓ png</button>
       </div>
       <div class="hint">← → / drag to wander · tap grass &amp; glints</div>
@@ -102,7 +103,9 @@ export function boot(root: HTMLElement): void {
     logicalW: 0,
     seed,
   };
-  const motion: Motion = { x: 0, target: 0, velocity: 0, held: 0, dragging: false, dragVelocity: 0, heading: 1 };
+  const params = new URLSearchParams(window.location.search);
+  const startX = Math.max(0, Math.round(Number(params.get("x")) || 0));
+  const motion: Motion = { x: startX, target: startX, velocity: 0, held: 0, dragging: false, dragVelocity: 0, heading: 1 };
 
   // Idle-time buffer: between frames, build the world just past the edge
   // of the view (in the direction of travel) so new chunks are already
@@ -125,8 +128,13 @@ export function boot(root: HTMLElement): void {
 
   // time of day: a slow cycle from a starting hour (late morning, or
   // ?time=dawn|day|dusk|night); the time button jumps to the next one
-  const startName = new URLSearchParams(window.location.search).get("time");
-  let phaseOffset = TIMES.find((t) => t.name === startName)?.phase ?? 0.38;
+  // ?time= takes a name (dawn, day, dusk, night) or an exact day phase
+  // (0..1, as written into shared links); otherwise start in late morning
+  const startTime = params.get("time");
+  const named = TIMES.find((t) => t.name === startTime);
+  const exact = startTime !== null && startTime !== "" && Number.isFinite(Number(startTime)) ? Number(startTime) : null;
+  const startPhase = named?.phase ?? exact ?? 0.38;
+  let phaseOffset = startPhase - performance.now() / DAY_LENGTH;
   const phaseAt = (time: number) => (((time / DAY_LENGTH + phaseOffset) % 1) + 1) % 1;
   const timeButton = ui.querySelector("#time") as HTMLButtonElement;
   let shownTime = "";
@@ -194,6 +202,33 @@ export function boot(root: HTMLElement): void {
     renderer.setSeed(next);
     renderer.restoreFound(loadFound(next));
   });
+  // the address bar always holds a link to the current view: where you
+  // are and what time of day it is, refreshed every second or so
+  const viewUrl = () => {
+    const u = new URL(window.location.href);
+    u.searchParams.set("seed", state.seed);
+    u.searchParams.set("x", String(Math.round(motion.x)));
+    u.searchParams.set("time", phaseAt(performance.now()).toFixed(3));
+    return u.toString();
+  };
+  window.setInterval(() => window.history.replaceState(null, "", viewUrl()), 1000);
+
+  const linkButton = ui.querySelector("#link") as HTMLButtonElement;
+  linkButton.addEventListener("click", async () => {
+    const url = viewUrl();
+    window.history.replaceState(null, "", url);
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(url);
+      copied = true;
+    } catch {
+      // clipboard unavailable (insecure context, permissions): the link is
+      // still in the address bar
+    }
+    linkButton.textContent = copied ? "✓ copied" : "↑ in address bar";
+    window.setTimeout(() => (linkButton.textContent = "🔗 link"), 1600);
+  });
+
   ui.querySelector("#dl")?.addEventListener("click", () => {
     canvas.toBlob((blob) => {
       if (!blob) return;

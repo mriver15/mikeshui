@@ -73,12 +73,16 @@ An endless, procedurally generated pixel-art landscape you can wander through, i
 | `◀` / `▶` | Glide a short way |
 | Time button | Jump to the next time of day |
 | `✦ new` | Generate a new world |
+| `🔗 link` | Copy a link to exactly this spot and time of day |
 | `↓ png` | Save a screenshot |
 
 URL parameters:
 
-- `?seed=anything` picks the world. The seed is kept in the URL, so you can share a link to a world.
-- `?time=dawn|day|dusk|night` sets the starting time of day.
+- `?seed=anything` picks the world.
+- `?x=48210` starts at that position along the world.
+- `?time=dawn|day|dusk|night`, or an exact day phase from 0 to 1 (0 midnight, 0.5 noon), sets the starting time of day.
+
+The address bar keeps all three up to date as you wander, so the URL is always a link back to exactly what you're looking at.
 
 ## Running it
 
