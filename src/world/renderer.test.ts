@@ -31,8 +31,8 @@ describe("tall-grass encounters", () => {
     r.resize(CHUNK_W);
     r.draw(scroll, 0);
     const spot = generateChunk(seed, k).tallGrass[0];
-    expect(r.poke(spot.x - scroll + 16, spot.y + 20, scroll, 1000)).toBe(true);
-    expect(r.poke(spot.x - scroll + 16, 140, scroll, 1000)).toBe(false);
+    expect(r.poke(spot.x - scroll + 16, spot.y + 20, scroll, 1000)).toBe("grass");
+    expect(r.poke(spot.x - scroll + 16, 140, scroll, 1000)).toBe(null);
   });
 
   it("an encounter changes the frame while it plays and leaves it be afterwards", () => {
@@ -66,8 +66,9 @@ describe("hidden items", () => {
     const r = new Renderer(seed, canvas() as never);
     r.resize(CHUNK_W);
     r.draw(scroll, 0);
-    expect(r.poke(item.x + 3, item.y - 2, scroll, 100)).toBe(true);
-    expect(r.foundItems()).toEqual([`${scroll + item.x},${item.y}`]);
+    expect(r.poke(item.x + 3, item.y - 2, scroll, 100)).toBe("item");
+    expect(r.foundItems()).toEqual([`${scroll + item.x},${item.y}:${item.kind}`]);
+    expect([...r.foundTally().values()]).toEqual([1]);
     // already found: tapping it again doesn't find it a second time
     r.poke(item.x, item.y, scroll, 5000);
     expect(r.foundItems()).toHaveLength(1);
@@ -75,7 +76,10 @@ describe("hidden items", () => {
     const again = new Renderer(seed, canvas() as never);
     again.resize(CHUNK_W);
     again.draw(scroll, 0);
-    again.restoreFound([`${scroll + item.x},${item.y}`]);
-    expect(again.foundItems()).toHaveLength(1);
+    again.restoreFound(r.foundItems());
+    expect(again.foundItems()).toEqual(r.foundItems());
+    // entries saved before kinds were recorded still count
+    again.restoreFound(["5,200"]);
+    expect(again.foundTally().get("?")).toBe(1);
   });
 });

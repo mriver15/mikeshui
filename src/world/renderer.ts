@@ -158,8 +158,8 @@ export class Renderer {
   private lastFrame: number | null = null;
   /** How far down from the top the location banner settles (clear of any overlaid UI). */
   private topInset = 6;
-  /** Hidden items already found, by world position ("x,y"). */
-  private found = new Set<string>();
+  /** Hidden items already found, by world position ("x,y"), with which item each was (-1 if unknown). */
+  private found = new Map<string, number>();
   /** The latest find: where, what, and when, for the pickup and message. */
   private pickup: { wx: number; y: number; kind: number; at: number; message: Pixmap } | null = null;
 
@@ -407,7 +407,7 @@ export class Renderer {
    * near the tap is found; otherwise, if it's on a tall-grass tuft, an
    * encounter starts there.
    */
-  poke(x: number, y: number, scrollX: number, time: number): boolean {
+  poke(x: number, y: number, scrollX: number, time: number): "item" | "grass" | null {
     const wx = scrollX + x;
     const k = Math.floor(wx / CHUNK_W);
     for (const kk of [k - 1, k, k + 1]) {
@@ -417,32 +417,52 @@ export class Renderer {
         const iwx = kk * CHUNK_W + item.x;
         const key = `${iwx},${item.y}`;
         if (this.found.has(key) || Math.abs(iwx - wx) > 9 || Math.abs(item.y - y) > 9) continue;
-        this.found.add(key);
+        this.found.set(key, item.kind);
         const name = ITEMS[item.kind];
         const article = /^[AEIOU]/.test(name) ? "AN" : "A";
         this.pickup = { wx: iwx, y: item.y, kind: item.kind, at: time, message: messagePixmap(`FOUND ${article} ${name}!`) };
-        return true;
+        return "item";
       }
     }
     const chunk = this.chunks.get(k);
-    if (!chunk) return false;
+    if (!chunk) return null;
     for (const spot of chunk.tallGrass) {
       if (wx >= spot.x && wx < spot.x + TILE && y >= spot.y + 8 && y < spot.y + TILE) {
         this.pokes.set(`${spot.x},${spot.y}`, time);
-        return true;
+        return "grass";
       }
     }
-    return false;
+    return null;
   }
 
-  /** Hidden items already found in this world, as "x,y" keys — for saving. */
+  /**
+   * Hidden items found in this world, for saving: "x,y:kind" entries
+   * (position, then which item it was).
+   */
   foundItems(): string[] {
-    return [...this.found];
+    return [...this.found].map(([key, kind]) => `${key}:${kind}`);
   }
 
-  /** Mark items as already found (e.g. restored from a previous visit). */
-  restoreFound(keys: string[]): void {
-    for (const key of keys) this.found.add(key);
+  /**
+   * Mark items as already found, from `foundItems()` entries saved on a
+   * previous visit (plain "x,y" entries from before kinds were saved
+   * count too, as an unknown item).
+   */
+  restoreFound(entries: string[]): void {
+    for (const entry of entries) {
+      const [key, kind] = entry.split(":");
+      this.found.set(key, kind === undefined ? -1 : Number(kind));
+    }
+  }
+
+  /** How many of each item have been found in this world, by name ("?" for unknown). */
+  foundTally(): Map<string, number> {
+    const tally = new Map<string, number>();
+    for (const kind of this.found.values()) {
+      const name = ITEMS[kind] ?? "?";
+      tally.set(name, (tally.get(name) ?? 0) + 1);
+    }
+    return tally;
   }
 
   /**

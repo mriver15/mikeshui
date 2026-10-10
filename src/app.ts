@@ -86,16 +86,70 @@ export function boot(root: HTMLElement): void {
         </div>
         <button id="time" title="skip to the next time of day">☀ day</button>
         <button id="new" title="generate a new world">✦ new</button>
+        <button id="bag" title="items you've found in this world">🎒 0</button>
         <button id="link" title="copy a link to exactly this spot and time of day">🔗 link</button>
         <button id="dl" title="save a screenshot">↓ png</button>
       </div>
       <div class="hint">← → / drag to wander · tap grass &amp; glints</div>
+    </div>
+    <div class="bag-list" hidden></div>
+    <div class="tip" hidden>
+      <span>Tap the glints ✦ and rustling grass — things are hiding out there.</span>
+      <button id="tip-close" title="got it">✕</button>
     </div>`;
   root.appendChild(ui);
   const bar = ui.querySelector(".bar") as HTMLElement;
 
   const renderer = new Renderer(seed, canvas);
   renderer.restoreFound(loadFound(seed));
+
+  // the bag: a count of this world's finds in the bar, and a list of them
+  const bagButton = ui.querySelector("#bag") as HTMLButtonElement;
+  const bagList = ui.querySelector(".bag-list") as HTMLElement;
+  const updateBag = () => {
+    const tally = renderer.foundTally();
+    let total = 0;
+    for (const n of tally.values()) total += n;
+    bagButton.textContent = `🎒 ${total}`;
+    bagList.innerHTML =
+      total === 0
+        ? `<div class="empty">Nothing yet. Look for glints in the grass.</div>`
+        : [...tally]
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, n]) => `<div class="row"><span>${name === "?" ? "SOMETHING" : name}</span><span>×${n}</span></div>`)
+            .join("");
+  };
+  updateBag();
+  bagButton.addEventListener("click", (e) => {
+    e.stopPropagation();
+    bagList.hidden = !bagList.hidden;
+    if (!bagList.hidden) hideTip();
+  });
+  window.addEventListener("pointerdown", (e) => {
+    if (!bagList.hidden && !bagList.contains(e.target as Node) && e.target !== bagButton) bagList.hidden = true;
+  });
+
+  // a one-time tip on a first visit, so the hidden things get found
+  const tip = ui.querySelector(".tip") as HTMLElement;
+  const hideTip = () => {
+    tip.hidden = true;
+    try {
+      window.localStorage.setItem("emerald-field:tip-seen", "1");
+    } catch {
+      // storage unavailable: the tip may show again next time
+    }
+  };
+  let tipSeen = false;
+  try {
+    tipSeen = window.localStorage.getItem("emerald-field:tip-seen") === "1";
+  } catch {
+    tipSeen = false;
+  }
+  if (!tipSeen) {
+    tip.hidden = false;
+    window.setTimeout(hideTip, 9000);
+  }
+  ui.querySelector("#tip-close")?.addEventListener("click", hideTip);
   const state: AppState = {
     renderer,
     canvas,
@@ -183,6 +237,8 @@ export function boot(root: HTMLElement): void {
     if (view.height === 0) return;
     const bottom = bar.getBoundingClientRect().bottom - view.top;
     renderer.setTopInset(Math.ceil((bottom / view.height) * VIEW_H) + 4);
+    // the bag list and tip hang just under the bar too
+    ui.style.setProperty("--bar-bottom", `${Math.round(bar.getBoundingClientRect().bottom)}px`);
   };
   new ResizeObserver(keepBannersClear).observe(bar);
 
@@ -201,6 +257,7 @@ export function boot(root: HTMLElement): void {
     state.seedLabel.textContent = next;
     renderer.setSeed(next);
     renderer.restoreFound(loadFound(next));
+    updateBag();
   });
   // the address bar always holds a link to the current view: where you
   // are and what time of day it is, refreshed every second or so
@@ -301,9 +358,15 @@ export function boot(root: HTMLElement): void {
       const rect = canvas.getBoundingClientRect();
       const x = ((e.clientX - rect.left) / rect.width) * state.logicalW;
       const y = ((e.clientY - rect.top) / rect.height) * VIEW_H;
-      if (renderer.poke(Math.floor(x), Math.floor(y), Math.round(motion.x), performance.now())) {
+      const hit = renderer.poke(Math.floor(x), Math.floor(y), Math.round(motion.x), performance.now());
+      if (hit === "item") {
         saveFound(state.seed, renderer.foundItems());
+        updateBag();
+        bagButton.classList.remove("bump");
+        void bagButton.offsetWidth; // restart the animation
+        bagButton.classList.add("bump");
       }
+      if (hit) hideTip();
       return;
     }
     // a drag that stopped before release shouldn't fling
