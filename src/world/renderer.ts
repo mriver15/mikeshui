@@ -150,6 +150,8 @@ export class Renderer {
   private darkness = 0;
   /** The area the view is in, its banner, and when the view entered it. */
   private area: { key: string; banner: Pixmap; since: number } | null = null;
+  /** How far down from the top the location banner settles (clear of any overlaid UI). */
+  private topInset = 6;
   /** Hidden items already found, by world position ("x,y"). */
   private found = new Set<string>();
   /** The latest find: where, what, and when, for the pickup and message. */
@@ -262,6 +264,11 @@ export class Renderer {
     this.present(pal, lit ? visible : [], scrollX, fgScroll);
   }
 
+  /** Keep the location banner clear of on-screen UI covering the top `px` view pixels. */
+  setTopInset(px: number): void {
+    this.topInset = Math.max(6, Math.min(VIEW_H / 2, Math.round(px)));
+  }
+
   /**
    * The location banner: when the middle of the view crosses into a new
    * town or route, its name slides down from the top-left corner, holds
@@ -281,7 +288,7 @@ export class Renderer {
     const ease = (t: number) => 1 - (1 - t) * (1 - t);
     const shown = age < slideIn ? ease(age / slideIn) : age > hold ? 1 - ease((age - hold) / slideOut) : 1;
     const b = this.area.banner;
-    blit(fb, b, 6, Math.round(-b.h + (b.h + 6) * shown));
+    blit(fb, b, 6, Math.round(-b.h + (b.h + this.topInset) * shown));
   }
 
   /**

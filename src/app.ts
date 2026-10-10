@@ -68,20 +68,30 @@ export function boot(root: HTMLElement): void {
   const ui = document.createElement("div");
   ui.className = "ui";
   ui.innerHTML = `
-    <div class="panel">
-      <div class="title">EMERALD FIELD</div>
-      <div class="subtitle">procedural pixel-art landscape</div>
-      <div class="seed">seed&nbsp;<span id="seed">${seed}</span></div>
-      <div class="controls">
-        <button id="left">◀</button>
-        <button id="right">▶</button>
-        <button id="time">☀ day</button>
-        <button id="new">✦ new</button>
-        <button id="dl">↓ png</button>
+    <div class="bar">
+      <div class="brand">
+        <span class="gem" aria-hidden="true"></span>
+        <div>
+          <div class="title">EMERALD FIELD</div>
+          <div class="subtitle">procedural pixel-art landscape</div>
+        </div>
       </div>
-      <div class="hint">← → or drag to wander · tap tall grass</div>
+      <div class="seed" title="this world's seed — share the URL to share the world">
+        <span class="seed-label">seed</span><span id="seed">${seed}</span>
+      </div>
+      <div class="controls">
+        <div class="group">
+          <button id="left" title="glide left">◀</button>
+          <button id="right" title="glide right">▶</button>
+        </div>
+        <button id="time" title="skip to the next time of day">☀ day</button>
+        <button id="new" title="generate a new world">✦ new</button>
+        <button id="dl" title="save a screenshot">↓ png</button>
+      </div>
+      <div class="hint">← → / drag to wander · tap grass &amp; glints</div>
     </div>`;
   root.appendChild(ui);
+  const bar = ui.querySelector(".bar") as HTMLElement;
 
   const renderer = new Renderer(seed, canvas);
   renderer.restoreFound(loadFound(seed));
@@ -155,7 +165,18 @@ export function boot(root: HTMLElement): void {
     canvas.height = h;
     state.logicalW = Math.max(VIEW_H, Math.round(VIEW_H * (w / h)));
     renderer.resize(state.logicalW);
+    keepBannersClear();
   };
+
+  // the in-world banners slide in just below the floating bar, wherever
+  // its height (it wraps on narrow screens) puts its bottom edge
+  const keepBannersClear = () => {
+    const view = canvas.getBoundingClientRect();
+    if (view.height === 0) return;
+    const bottom = bar.getBoundingClientRect().bottom - view.top;
+    renderer.setTopInset(Math.ceil((bottom / view.height) * VIEW_H) + 4);
+  };
+  new ResizeObserver(keepBannersClear).observe(bar);
 
   window.addEventListener("resize", resize);
 
