@@ -221,6 +221,38 @@ export class Renderer {
     }
   }
 
+  /**
+   * Generate one missing piece of world just beyond the view — world
+   * chunks, then foreground chunks, then backdrop strips; ahead in the
+   * direction of travel (`dir` = ±1) before behind — so it's cached
+   * before it scrolls into view instead of being built mid-frame, which
+   * is where scrolling hitched. Meant for idle time between frames, one
+   * piece per call. Returns false once the buffer is full.
+   */
+  prefetch(scrollX: number, dir: number): boolean {
+    const around = (first: number, last: number) =>
+      dir < 0 ? [first - 1, first - 2, last + 1] : [last + 1, last + 2, first - 1];
+    const w = this.fb.w;
+    const first = Math.floor(scrollX / CHUNK_W);
+    const last = Math.floor((scrollX + w - 1) / CHUNK_W);
+    for (const k of around(first, last)) {
+      if (!this.chunks.has(k)) {
+        this.getChunk(k);
+        return true;
+      }
+    }
+    const fgScroll = Math.round(scrollX * PARALLAX);
+    const fgFirst = Math.floor(fgScroll / CHUNK_W);
+    const fgLast = Math.floor((fgScroll + w - 1) / CHUNK_W);
+    for (const k of around(fgFirst, fgLast)) {
+      if (!this.fgChunks.has(k)) {
+        this.getFgChunk(k);
+        return true;
+      }
+    }
+    return this.backdrop.prefetch(scrollX, w, dir);
+  }
+
   private chunkRange<T>(first: number, last: number, get: (k: number) => T): Array<{ k: number; chunk: T }> {
     const out: Array<{ k: number; chunk: T }> = [];
     for (let k = first; k <= last; k++) out.push({ k, chunk: get(k) });

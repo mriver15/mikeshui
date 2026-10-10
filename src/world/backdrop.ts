@@ -209,6 +209,26 @@ export class Backdrop {
   }
 
   /**
+   * Build one missing strip just beyond the view for some layer, in the
+   * direction of travel (`dir` = ±1), so it's ready before it scrolls in.
+   * Returns false when every layer's buffer is already built.
+   */
+  prefetch(scrollX: number, viewW: number, dir: number): boolean {
+    for (let li = 0; li < LAYERS.length; li++) {
+      const u0 = Math.round(scrollX * LAYERS[li].parallax);
+      const first = Math.floor(u0 / STRIP_W);
+      const last = Math.floor((u0 + viewW) / STRIP_W);
+      for (const s of dir < 0 ? [first - 1, last + 1] : [last + 1, first - 1]) {
+        if (!this.cache.has(`${li}:${s}`)) {
+          this.strip(li, s);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Low-lying valley mist: haze thickening toward the horizon over
    * whatever's already drawn — drawn between the far and mid layers, so
    * the mountains' and far hills' feet fade into it and it pools in the
